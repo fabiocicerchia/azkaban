@@ -1,0 +1,25 @@
+# Compiled binaries — build from source, never commit (audit.sh flags
+# committed ELF blobs as suspicious; do not be your own finding).
+/azkaban
+*.test
+
+# Secrets / local env
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Logs / caches
+*.log
+.cache/
+coverage/
+*.coverage
+trivy.sarif
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp

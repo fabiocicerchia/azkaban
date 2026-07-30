@@ -1,0 +1,55 @@
+name: code-quality
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Lint the GitHub Actions workflows themselves.
+      - name: actionlint
+        uses: raven-actions/actionlint@v2
+
+      # Enforce .editorconfig (indentation, EOL, trailing whitespace).
+      - name: editorconfig-checker
+        uses: editorconfig-checker/action-editorconfig-checker@v2
+
+      # Catch common typos in code and docs.
+      - name: typos
+        uses: crate-ci/typos@master
+
+      # pre-commit runs the language-specific hooks defined in
+      # .pre-commit-config.yaml.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: pre-commit
+        uses: pre-commit/action@v3.0.1
+
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # The jail builds static / CGO-free.
+      - run: CGO_ENABLED=0 go build -o azkaban .
+
+      # The suite drives a real jail, so bwrap has to be present; without it the
+      # containment tests skip and CI would pass having proved nothing.
+      - name: install bubblewrap
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+      - run: CGO_ENABLED=0 go test ./...
