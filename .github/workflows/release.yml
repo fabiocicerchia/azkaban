@@ -16,7 +16,7 @@ jobs:
   release-please:
     runs-on: ubuntu-latest
     steps:
-      - uses: googleapis/release-please-action@v4
+      - uses: googleapis/release-please-action@v5
         with:
           # "simple" tracks version.txt + CHANGELOG. Go has no manifest to bump,
           # so there is nothing a language-specific type would add.
