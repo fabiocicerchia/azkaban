@@ -220,7 +220,7 @@ func containerReason(body []byte, rootReal string) string {
 		} `json:"HostConfig"`
 	}
 	if err := json.Unmarshal(body, &b); err != nil {
-		return "unparseable container-create body"
+		return "unparsable container-create body"
 	}
 	h := b.HostConfig
 	if h == nil {
@@ -297,7 +297,7 @@ func volumeReason(body []byte, rootReal string) string {
 		DriverOpts map[string]string `json:"DriverOpts"`
 	}
 	if err := json.Unmarshal(body, &v); err != nil {
-		return "unparseable volume-create body"
+		return "unparsable volume-create body"
 	}
 	// A local volume with a `device` opt is a host bind mount in disguise
 	// (`--opt type=none --opt o=bind --opt device=/path`). Allow only within cwd.
