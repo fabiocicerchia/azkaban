@@ -13,6 +13,7 @@ ignored. Paths are `$HOME`-relative unless absolute.
 # ~/.config/azkaban/config
 ro  /etc/ssl/certs          # bind read-only
 rw  /srv/shared-cache       # bind read-write (overlaid like the rest)
+persist .claude/.credentials.json   # writable AND not overlaid — survives exit
 env ANTHROPIC_API_KEY       # forward one host variable
 mask .config/mytool/token   # blank out a path azkaban does not know about
 ```
@@ -37,6 +38,38 @@ azkaban --ro /opt/toolchain --rw ~/scratch claude
 
 Flag for a path *this* run needs, file for a path *every* run needs. `--rw` is
 still overlaid; add `--persist` if the writes must survive.
+
+## Keeping one path (`persist`)
+
+`--persist` is all-or-nothing: to keep a login token you make every `$HOME`
+allowlist directory really destroyable again. `persist PATH` is the per-path
+form — that one path is bound to the real host inode, everything else stays a
+throwaway overlay.
+
+```
+# ~/.config/azkaban/config
+persist .claude/.credentials.json
+```
+
+```bash
+azkaban --persist-path .claude/.credentials.json claude   # same, one run only
+```
+
+The token written by `/login` inside the jail now lands on the host; a
+`rm -rf ~/.claude` in the same run still loses nothing else. Same
+`$HOME`-relative resolution, same refusal of `/` and `$HOME`, and it un-masks
+like `ro`/`rw`.
+
+Two things to know:
+
+- **The source must already exist.** A bind needs something to bind. If the path
+  is missing azkaban warns on stderr and carries on without it — create it
+  outside the jail first (for Claude Code: log in once on the host).
+- **Name the file, not the directory,** unless the tool saves atomically.
+  `rename(2)` onto a bind *mountpoint* fails with `EBUSY`, so a tool that writes
+  `x.tmp` and renames it over the target needs `persist .claude` (the directory)
+  instead. Directory persistence hands back the `rm -rf` exposure for that
+  directory — which is the trade `--persist` makes for all of them.
 
 ## Credential masking
 

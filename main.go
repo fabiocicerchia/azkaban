@@ -266,9 +266,12 @@ func outer(argv []string) {
 	// Per-run equivalents of the config file's "ro"/"rw" lines, for a path this
 	// one run needs and every future run should not. Repeatable; same $HOME-relative
 	// resolution, same bindSafe rejection, same un-masking power as the file.
-	var fRO, fRW stringList
+	var fRO, fRW, fPersistPath stringList
 	fs.Var(&fRO, "ro", "")
 	fs.Var(&fRW, "rw", "")
+	// Per-path form of --persist: one path whose writes must outlive the jail
+	// (a login token), without making the whole $HOME allowlist real.
+	fs.Var(&fPersistPath, "persist-path", "")
 	if err := fs.Parse(argv); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			usage()
@@ -328,6 +331,7 @@ func outer(argv []string) {
 	// so a flag path and a config path are indistinguishable from this point on.
 	uc.ro = append(uc.ro, fRO...)
 	uc.rw = append(uc.rw, fRW...)
+	uc.persist = append(uc.persist, fPersistPath...)
 
 	// Patched /etc/hosts and /etc/resolv.conf. /run is tmpfs'd (empty) inside
 	// the jail, which breaks the usual resolv.conf -> /run/.../stub-resolv.conf
@@ -567,6 +571,36 @@ func outer(argv []string) {
 		}
 	}
 
+	// Per-path persistence. The overlay above is all-or-nothing per RUN, which
+	// makes "keep my login token" cost "make every allowlist dir really
+	// destroyable" — the exact trade --persist was written to avoid. These are
+	// bound to the real host inode, AFTER the rw loop so they win over the
+	// parent directory's tmp-overlay: a nested bind that comes FIRST is simply
+	// covered by the overlay mounted on top of it and silently does nothing.
+	//
+	// Deliberately narrow: name the file, not the directory. `persist .claude`
+	// works and is a legitimate choice, but it hands back the whole rm -rf.
+	for _, rel := range uc.persist {
+		p := resolve(home, rel)
+		if !bindSafe(home, p) {
+			fatal(2, "refusing persist bind "+p+": it would re-expose $HOME (or /) that the jail just hid")
+		}
+		if !exists(p) {
+			// Loud, because silence is the failure this whole feature exists to
+			// fix: a persist line that does nothing looks exactly like one that
+			// works until the token is gone.
+			fmt.Fprintln(os.Stderr, "azkaban: WARNING: persist "+rel+" ignored: no such path on the host. "+
+				"A bind needs an existing source — create it outside the jail first.")
+			continue
+		}
+		add("--bind", p, p)
+		if isDir(p) {
+			llRW = append(llRW, p)
+		} else {
+			llRWFiles = append(llRWFiles, p)
+		}
+	}
+
 	// ~/.config is writable above (tools need it), which would let the jailed
 	// process rewrite ~/.config/azkaban/config — the file loadUserBinds trusts —
 	// and escape on the NEXT run with a single `rw /` line. Freeze it and the
@@ -592,7 +626,7 @@ func outer(argv []string) {
 	// is left alone — that is the escape hatch, no extra syntax needed.
 	for _, rel := range slices.Concat(maskPaths, uc.mask) {
 		p := resolve(home, rel)
-		if !exists(p) || mentionedInConfig(rel, p, home, uc.ro, uc.rw) {
+		if !exists(p) || mentionedInConfig(rel, p, home, uc.ro, uc.rw, uc.persist) {
 			continue
 		}
 		if isDir(p) {
@@ -908,8 +942,8 @@ func cgroupUnavailable(why string) *os.File {
 // mentionedInConfig reports whether the user's trusted config names this path,
 // in which case it is not masked — that is the opt-out for someone who genuinely
 // needs `gh` or a registry login inside the jail.
-func mentionedInConfig(rel, abs, home string, userRO, userRW []string) bool {
-	for _, e := range slices.Concat(userRO, userRW) {
+func mentionedInConfig(rel, abs, home string, userRO, userRW, userPersist []string) bool {
+	for _, e := range slices.Concat(userRO, userRW, userPersist) {
 		if e == rel || resolve(home, e) == abs {
 			return true
 		}
@@ -1037,10 +1071,12 @@ func bindSafe(home, p string) bool {
 // at ~/.config/azkaban/config. That file is trusted, which is only true because
 // the jail re-binds its directory read-only (see azkabanCfgDir) — the repo's own
 // files are never consulted.
-// Format: one "ro <path>", "rw <path>", "env <NAME>" or "mask <path>" per line;
-// # comments; blank lines ok. Paths are $HOME-relative unless absolute.
-// "mask" blanks a path out; naming a masked path with "ro"/"rw" un-masks it.
-type userConf struct{ ro, rw, env, mask []string }
+// Format: one "ro <path>", "rw <path>", "persist <path>", "env <NAME>" or
+// "mask <path>" per line; # comments; blank lines ok. Paths are $HOME-relative
+// unless absolute.
+// "mask" blanks a path out; naming a masked path with "ro"/"rw"/"persist"
+// un-masks it. "persist" also opts that one path out of the throwaway overlay.
+type userConf struct{ ro, rw, env, mask, persist []string }
 
 func loadUserBinds(home string) userConf {
 	data, err := os.ReadFile(filepath.Join(home, azkabanCfgDir, "config"))
@@ -1070,6 +1106,8 @@ func parseUserBinds(data string) userConf {
 			c.env = append(c.env, val)
 		case "mask":
 			c.mask = append(c.mask, val)
+		case "persist":
+			c.persist = append(c.persist, val)
 		}
 	}
 	return c
@@ -1138,6 +1176,12 @@ func usage() {
   --rw PATH      same, writable (still overlaid unless --persist). Repeatable.
                  $HOME-relative; / and $HOME are refused; un-masks any credential
                  store named. For every run, use "ro"/"rw" lines in the config.
+  --persist-path PATH
+                 exempt ONE path from the throwaway overlay: writes to it land on
+                 the host, everything else still evaporates. For the file a tool
+                 must keep across runs (a login token) without --persist making
+                 the whole allowlist destroyable. Repeatable; name the file, not
+                 its directory. For every run, use "persist" lines in the config.
   --dry-run      print the bwrap command instead of running it
   -h, --help     this help
 `)
@@ -1180,4 +1224,8 @@ func usage() {
 //   8. --ro/--rw widen the allowlist for one run and un-mask any credential
 //      store they name. No new vector — a pasted `--rw ~` is just an easier way
 //      to reach 2 and 7 than editing the config. bindSafe still refuses / and $HOME.
+//   9. persist/--persist-path is 7 scoped to one path: that path is really
+//      writable and really deletable, everything else stays overlaid. A file is
+//      a small target; `persist .claude` is 2 and 7 for that whole directory,
+//      which is the point of naming the file instead. bindSafe still applies.
 // --------------------------------------------------------------------------- //

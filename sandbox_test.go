@@ -253,6 +253,66 @@ func TestOverlay_ProjectDirIsReallyWritable(t *testing.T) {
 	}
 }
 
+// Per-path persistence: the login-token case. One named file survives, and the
+// blast radius of --persist (every allowlist dir really destroyable) does not
+// come with it.
+//
+// The ordering is the whole trick and the reason this is a test rather than an
+// assumption: a nested bind emitted BEFORE its parent's --tmp-overlay is simply
+// covered by it and does nothing — silently, because the overlay's lower layer
+// still serves the old contents, so reads look fine right up until the write is
+// lost. That is the shape of the `ro .claude/.credentials.json` bug this
+// replaces.
+func TestPersistPath_OneFileSurvivesTheOverlay(t *testing.T) {
+	e := newEnv(t)
+	if !bwrapHas("--tmp-overlay") {
+		t.Skip("this bwrap has no --tmp-overlay")
+	}
+	tok := e.path(".claude/.credentials.json")
+	os.WriteFile(tok, []byte(`{"token":"old"}`), 0o600)
+
+	r := e.run(t, []string{"--persist-path", ".claude/.credentials.json"},
+		`echo '{"token":"new"}' > "$HOME/.claude/.credentials.json" && echo "wrote:ok"; `+
+			// Atomic-save shape: many CLIs write a temp file and rename over the
+			// target. rename(2) onto a bind MOUNTPOINT fails with EBUSY, so a tool
+			// that saves this way needs the directory persisted, not the file.
+			probe("rename", `sh -c 'echo x > "$HOME/.claude/.tmp" && mv "$HOME/.claude/.tmp" "$HOME/.claude/.credentials.json"' 2>/dev/null`)+
+			// Everything else in the same directory is still throwaway.
+			`echo edited > "$HOME/.claude/settings.json"`)
+
+	if !r.has("wrote:ok") {
+		t.Fatalf("persisted file was not writable inside the jail:\n%s\n%s", r.stdout, r.stderr)
+	}
+	if b, _ := os.ReadFile(tok); !strings.Contains(string(b), "new") {
+		t.Errorf("persist-path did not reach the host: %q", b)
+	}
+	e.mustContain(t, ".claude/settings.json", decoys[".claude/settings.json"])
+}
+
+// A persist line naming a path that does not exist on the host cannot be bound.
+// It must say so: silence here reproduces the exact failure the feature fixes.
+func TestPersistPath_MissingSourceWarns(t *testing.T) {
+	e := newEnv(t)
+	r := e.run(t, []string{"--persist-path", ".claude/nope.json"}, `echo ran`)
+	if !strings.Contains(r.stderr, "nope.json") {
+		t.Errorf("a persist path with no host source must warn, got stderr:\n%s", r.stderr)
+	}
+}
+
+// persist is also an un-mask, same as ro/rw — otherwise the mask loop (bound
+// last, so it wins) would blank out the very credential you asked to keep.
+func TestPersistPath_UnmasksCredentialStore(t *testing.T) {
+	e := newEnv(t)
+	p := e.path(".config/gh/hosts.yml")
+	os.MkdirAll(filepath.Dir(p), 0o700)
+	os.WriteFile(p, []byte("oauth_token: NEEDED-BY-GH"), 0o600)
+
+	r := e.run(t, []string{"--persist-path", ".config/gh"}, `cat "$HOME/.config/gh/hosts.yml" 2>/dev/null; echo "[end]"`)
+	if !strings.Contains(r.stdout, "NEEDED-BY-GH") {
+		t.Errorf("persist did not un-mask the credential store:\n%s", r.stdout)
+	}
+}
+
 // --persist restores real writes — and with them the original trap, documented
 // here so the trade-off is explicit rather than discovered the hard way.
 //

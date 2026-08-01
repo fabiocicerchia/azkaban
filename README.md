@@ -39,6 +39,8 @@ cleared, and no container socket is bound unless you ask for one.
 ```
 --no-gpu       do not bind GPU devices
 --persist      let $HOME writes really land (default: discard them, see below)
+--persist-path P
+               exempt ONE path from the overlay; the rest stays throwaway
 --bind-docker  bind the docker socket behind the filtering proxy (OFF by default)
 --bind-podman  same, for podman's Docker-compatible REST socket
 --unfiltered-container-socket
@@ -101,6 +103,22 @@ azkaban --persist claude    # transcripts land on the host, --resume works
 `--persist` is all-or-nothing — every writable `$HOME` entry, `rw` config lines
 and `--rw` included. [Why, and what bubblewrap would allow
 instead](docs/design.md#4-the-overlay--writes-that-cannot-outlive-the-jail).
+
+For the narrower case — *keep this one file, discard the rest* — name it and
+only it. The obvious one is a login token: `/login` inside the jail writes to
+the overlay, so every run starts logged out.
+
+```bash
+azkaban --persist-path .claude/.credentials.json claude
+```
+
+```
+# ~/.config/azkaban/config — for every run
+persist .claude/.credentials.json
+```
+
+The path must already exist on the host (azkaban warns if not), and it must be
+one the tool writes in place — see [configuration.md](docs/configuration.md#keeping-one-path-persist).
 
 ## This actually happened
 
