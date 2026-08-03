@@ -71,6 +71,78 @@ Two things to know:
   instead. Directory persistence hands back the `rm -rf` exposure for that
   directory — which is the trade `--persist` makes for all of them.
 
+### Claude Code needs two paths
+
+The token alone is not the login. `~/.claude.json` holds the account it belongs
+to (`oauthAccount`), the onboarding flag, and the per-project "do you trust this
+folder" answers — and it is a *file* in the writable allowlist, so by default it
+is a throwaway copy and every write to it is dropped on exit. Persist the token
+and watch the account state revert on the next run, and Claude Code asks you to
+log in again with a perfectly good token sitting on disk.
+
+```
+# ~/.config/azkaban/config
+persist .claude/.credentials.json
+persist .claude.json
+```
+
+Check it from inside the jail — the two lines below are the bind, not the
+overlay:
+
+```bash
+grep -E '\.claude(\.json|/\.cred)' /proc/self/mountinfo
+```
+
+`.claude.json` is a bigger target than the token: it is mutable state a hostile
+tool can now rewrite for real, not just read. Both files were already fully
+readable in the jail either way, so this costs integrity, not secrecy.
+
+Claude Code writes both atomically, and falls back to `copyFile` when the
+`rename` hits `EBUSY`/`EXDEV` — so the file-level bind above is enough, and
+`persist .claude` (the whole directory, `rm -rf` and all) is not needed.
+
+`--resume` and `--continue` need a third: transcripts live in
+`~/.claude/projects/<slug>/<session-id>.jsonl`, so with the overlay every session
+is gone the moment the jail exits and `claude --resume <id>` answers "No
+conversation found". This one has to be the *directory* — the session file's name
+is not known in advance:
+
+```
+persist .claude/projects
+```
+
+Transcripts are the one thing here worth losing on purpose; keep the line out if
+you would rather a hostile tool could not read (or delete) past sessions.
+
+## Pushing from inside the jail
+
+`~/.ssh` is not bound, so by default `git push` inside the jail fails with
+`Host key verification failed` — there are no keys, no agent and no
+`known_hosts`. That is the boundary working, not a bug.
+
+`--ssh-agent` is the narrow way through:
+
+```bash
+azkaban --ssh-agent claude
+```
+
+It binds `$SSH_AUTH_SOCK` and `known_hosts` (read-only) and nothing else. The
+private keys never enter the jail — what crosses is a *signing oracle*, so an
+exfiltrated jail keeps nothing after it exits. While it runs, though, anything
+inside can authenticate as you to every host those keys open. `ssh-add -c` on
+the host reduces that to one confirmation prompt per signature.
+
+Do not reach for `ro .ssh` instead. It is the same capability plus permanent
+key theft, and `--display` is the same oracle plus X11 and dbus.
+
+`gh` is a separate problem: if `gh auth status` says `(keyring)`, the token
+lives behind the D-Bus secret service, which the jail does not bind — so `gh`
+inside is unauthenticated and `gh auth login` cannot fix it from there (it would
+try the same keyring, and `ro .config/gh` is read-only besides). With
+`--ssh-agent` you do not need it for pushes; for `gh pr create` you would have
+to hand the jail a token via `env GH_TOKEN`, which *is* stealable — prefer
+opening the PR from the host.
+
 ## Credential masking
 
 Top-level hiding is deny-by-default — `~/.ssh` does not exist in the jail. But

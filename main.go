@@ -259,6 +259,7 @@ func outer(argv []string) {
 	fMemMax := fs.String("mem-max", "", "")
 	fNetPorts := fs.String("net-ports", "", "")
 	fDisplay := fs.Bool("display", false, "")
+	fSSHAgent := fs.Bool("ssh-agent", false, "")
 	fNoNet := fs.Bool("no-net", false, "")
 	fNoLandlock := fs.Bool("no-landlock", false, "")
 	fKeepEnv := fs.Bool("keep-env", false, "")
@@ -281,7 +282,7 @@ func outer(argv []string) {
 	}
 
 	gpu, overlay, landlockOn, rlimits := !*fNoGPU, !*fPersist, !*fNoLandlock, !*fNoRlimits
-	display, netIsolate := *fDisplay, *fNoNet
+	display, netIsolate, sshAgent := *fDisplay, *fNoNet, *fSSHAgent
 	keepEnv, dry, allowUserns, rawSock := *fKeepEnv, *fDry, *fAllowUserns, *fRawSock
 	memMax, netPorts := *fMemMax, *fNetPorts
 	// No container socket is bound unless explicitly asked for. On-by-default
@@ -376,6 +377,25 @@ func outer(argv []string) {
 	add("--symlink", "usr/sbin", "/sbin")
 	add("--ro-bind", "/etc", "/etc")
 	add("--ro-bind", hostsFile, "/etc/hosts")
+
+	// ssh fatals ("Bad owner or permissions") on any Include'd config file whose
+	// owner is neither root nor the caller. bwrap maps ONE uid, so every
+	// root-owned file reads as nobody (65534) inside the jail and every
+	// /etc/ssh/ssh_config.d drop-in trips that check — `git push` over ssh dies
+	// before it opens a socket. Re-serve the same bytes from a file we own.
+	sshDropIns, _ := filepath.Glob("/etc/ssh/ssh_config.d/*.conf")
+	for _, p := range sshDropIns {
+		// Bind at the symlink's TARGET: these drop-ins are usually symlinks into
+		// /usr/lib, and bwrap cannot create a mountpoint at a dangling-in-the-jail
+		// symlink. ssh follows the link and lands on our copy either way.
+		if t, err := filepath.EvalSymlinks(p); err == nil {
+			p = t
+		}
+		if data, err := os.ReadFile(p); err == nil {
+			add("--ro-bind", tempWith("azkaban-sshconf-", string(data)), p)
+		}
+	}
+
 	if exists("/opt") {
 		add("--ro-bind", "/opt", "/opt")
 	}
@@ -634,6 +654,34 @@ func outer(argv []string) {
 			continue
 		}
 		add("--ro-bind", maskFileOnce(&maskFile), p)
+	}
+
+	// ssh-agent passthrough. The private keys stay on the host: what crosses the
+	// boundary is a SIGNING ORACLE, not the key material, so an exfiltrated jail
+	// loses nothing permanent — the oracle dies with the socket. It is still real
+	// power while the jail runs: anything inside can authenticate as you to any
+	// host your loaded keys open, so this is opt-in and stays off by default.
+	// `ssh-add -c` on the host narrows it further, to one confirmation prompt per
+	// signature. Bound after the $HOME tmpfs and the mask loop so both binds win.
+	if sshAgent {
+		sock := os.Getenv("SSH_AUTH_SOCK")
+		switch {
+		case sock == "":
+			fatal(1, "--ssh-agent: SSH_AUTH_SOCK is not set; no agent to forward")
+		case !exists(sock):
+			fatal(1, "--ssh-agent: no socket at "+sock)
+		}
+		add("--bind", sock, sock)
+		add("--setenv", "SSH_AUTH_SOCK", sock)
+		llRWFiles = append(llRWFiles, sock)
+
+		// Without known_hosts every push dies on "Host key verification failed",
+		// which makes the flag look broken. This file holds no secret — only the
+		// list of hosts you have reached, which is the small leak the flag costs.
+		if kh := filepath.Join(home, ".ssh", "known_hosts"); exists(kh) {
+			add("--ro-bind", kh, kh)
+			llROFiles = append(llROFiles, kh)
+		}
 	}
 
 	// Project working dir: writable, and made the cwd.
@@ -1157,6 +1205,12 @@ func usage() {
   --display      pass through X11/wayland/XAUTHORITY + the wayland/pulse sockets
                  from /run/user (OFF by default; ssh-agent, gpg-agent, dbus and
                  any rootless container socket in there stay hidden)
+  --ssh-agent    forward $SSH_AUTH_SOCK (+ known_hosts read-only) so git push
+                 over ssh works. The keys stay on the host — the jail gets a
+                 signing oracle, not the key — but that oracle authenticates as
+                 you to every host they open, for as long as the jail runs.
+                 "ssh-add -c" makes each signature prompt on the host. OFF by
+                 default; ~/.ssh itself is never bound.
   --allow-userns permit nested user namespaces (needed by Chrome/Electron tools)
   --no-net       isolate the network in a new namespace (breaks internet access)
   --net-ports L  allow outbound TCP only to these ports (comma-separated), enforced
@@ -1228,4 +1282,11 @@ func usage() {
 //      writable and really deletable, everything else stays overlaid. A file is
 //      a small target; `persist .claude` is 2 and 7 for that whole directory,
 //      which is the point of naming the file instead. bindSafe still applies.
+//  10. --ssh-agent is 3's ssh-agent half, deliberately and alone: the jail can
+//      sign with your loaded keys and so push, pull and log in as you anywhere
+//      they are authorized, for the life of the jail. It is strictly narrower
+//      than the alternative it exists to prevent (`ro ~/.ssh`, which hands over
+//      the key itself, permanently) and than --display, which grants the same
+//      oracle plus X11 and dbus. `ssh-add -c` on the host reduces it to one
+//      confirmation prompt per signature; there is no in-jail equivalent.
 // --------------------------------------------------------------------------- //

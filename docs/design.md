@@ -150,7 +150,8 @@ Details in [containers.md](containers.md).
 
 The known escape vectors are documented at the bottom of `main.go` and in the
 `dockerproxy.go` header — read them. In short: `--unfiltered-container-socket`, `--keep-env`,
-`--persist`, and `--display` are all deliberate trade-offs you opt into.
+`--persist`, `--display` and `--ssh-agent` are all deliberate trade-offs you opt
+into.
 
 Two vectors are open by default:
 

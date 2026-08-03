@@ -99,6 +99,7 @@ type env struct {
 // prove a file was neither read nor destroyed, rather than merely absent.
 var decoys = map[string]string{
 	".ssh/id_rsa":                 "PRIVATE-KEY-MUST-NEVER-BE-VISIBLE",
+	".ssh/known_hosts":            "github.com ssh-ed25519 AAAA-decoy",
 	".aws/credentials":            "aws_secret_access_key=MUST-NEVER-BE-VISIBLE",
 	".gnupg/secring.gpg":          "GPG-SECRET-MUST-NEVER-BE-VISIBLE",
 	"Documents/taxes.txt":         "not on any allowlist",

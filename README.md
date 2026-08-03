@@ -48,6 +48,9 @@ cleared, and no container socket is bound unless you ask for one.
                Requires --bind-docker or --bind-podman; it picks the filtering,
                not the runtime.
 --display      pass through X11/Wayland (OFF by default)
+--ssh-agent    forward $SSH_AUTH_SOCK + known_hosts so `git push` works. The
+               keys stay on the host; the jail gets a signing oracle. OFF by
+               default, and ~/.ssh itself is still never bound.
 --no-net       isolate the network in a new namespace
 --net-ports L  allow outbound TCP only to these ports (e.g. 443,80)
 --keep-env     inherit the full host environment (default: clear it)
