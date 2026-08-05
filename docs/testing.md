@@ -28,3 +28,21 @@ Two naming conventions carry meaning:
 The docker integration test needs a real daemon and is skipped unless
 `AZKABAN_DOCKER_IT=1`. Everything else, including the socket filter tests
 (served by a fake daemon), runs offline and touches nothing.
+
+## audit.sh
+
+A separate tool that happens to live here: static malware triage for a directory,
+binary, or git URL. Greps for network/exec/persistence patterns and runs any of
+gitleaks, semgrep, trivy, clamav or yara that you have installed. Every hit is a
+*lead*, not a verdict — it analyses, it does not confine.
+
+```bash
+./audit.sh /path/to/checkout
+./audit.sh ./some-binary
+./audit.sh https://github.com/user/repo   # shallow clone to a temp dir, then sweep
+```
+
+A git URL is cloned with `--` and `protocol.ext` disabled, because
+`git clone ext::sh -c id` is remote code execution and this script's one promise
+is that it does not execute repo code. `YARA_RULES=/path/rules.yar` enables the
+yara pass.
