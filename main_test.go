@@ -15,6 +15,7 @@ rw .local/share/foo
   ro   /etc/ssl/certs
 env ANTHROPIC_API_KEY
 mask .config/mytool/token
+persist .claude/.credentials.json
 bogus line ignored
 `)
 	eq := func(name string, got, want []string) {
@@ -27,6 +28,20 @@ bogus line ignored
 	eq("rw", c.rw, []string{".local/share/foo"})
 	eq("env", c.env, []string{"ANTHROPIC_API_KEY"})
 	eq("mask", c.mask, []string{".config/mytool/token"})
+	eq("persist", c.persist, []string{".claude/.credentials.json"})
+}
+
+// A masked credential store named by `persist` must be left alone, exactly as
+// `ro`/`rw` do it — otherwise the mask loop (bound last, so it wins) blanks out
+// the token the persist line exists to keep.
+func TestMentionedInConfigCoversPersist(t *testing.T) {
+	const home = "/home/alice"
+	if !mentionedInConfig(".config/gh", home+"/.config/gh", home, nil, nil, []string{".config/gh"}) {
+		t.Error("persist must un-mask, like ro/rw")
+	}
+	if mentionedInConfig(".config/gh", home+"/.config/gh", home, nil, nil, []string{".config/doctl"}) {
+		t.Error("an unrelated persist entry must not un-mask")
+	}
 }
 
 // The jail binds ~/.config rw, so it can write ~/.config/azkaban/config. A `rw /`

@@ -93,6 +93,23 @@ func TestVisibility_AllowlistedPathsArePresent(t *testing.T) {
 	}
 }
 
+// ssh fatals on any Include'd config file owned by neither root nor the caller.
+// bwrap maps ONE uid, so every root-owned /etc/ssh/ssh_config.d drop-in reads as
+// nobody inside the jail and ssh dies before opening a socket — `git push` with
+// it. Guards the re-served user-owned copies.
+func TestVisibility_SSHConfigDropInsAreUsable(t *testing.T) {
+	if drops, _ := filepath.Glob("/etc/ssh/ssh_config.d/*.conf"); len(drops) == 0 {
+		t.Skip("no /etc/ssh/ssh_config.d drop-ins on this host")
+	}
+	if _, err := os.Stat("/usr/bin/ssh"); err != nil {
+		t.Skip("ssh not installed")
+	}
+	e := newEnv(t)
+	// -G only parses the config and prints the result; it opens no connection.
+	r := e.run(t, nil, probe("sshconf", `ssh -G example.com >/dev/null 2>&1`))
+	r.assert(t, "sshconf", true)
+}
+
 // --------------------------------------------------------------------------- //
 // Write confinement.
 // --------------------------------------------------------------------------- //
@@ -253,6 +270,66 @@ func TestOverlay_ProjectDirIsReallyWritable(t *testing.T) {
 	}
 }
 
+// Per-path persistence: the login-token case. One named file survives, and the
+// blast radius of --persist (every allowlist dir really destroyable) does not
+// come with it.
+//
+// The ordering is the whole trick and the reason this is a test rather than an
+// assumption: a nested bind emitted BEFORE its parent's --tmp-overlay is simply
+// covered by it and does nothing — silently, because the overlay's lower layer
+// still serves the old contents, so reads look fine right up until the write is
+// lost. That is the shape of the `ro .claude/.credentials.json` bug this
+// replaces.
+func TestPersistPath_OneFileSurvivesTheOverlay(t *testing.T) {
+	e := newEnv(t)
+	if !bwrapHas("--tmp-overlay") {
+		t.Skip("this bwrap has no --tmp-overlay")
+	}
+	tok := e.path(".claude/.credentials.json")
+	os.WriteFile(tok, []byte(`{"token":"old"}`), 0o600)
+
+	r := e.run(t, []string{"--persist-path", ".claude/.credentials.json"},
+		`echo '{"token":"new"}' > "$HOME/.claude/.credentials.json" && echo "wrote:ok"; `+
+			// Atomic-save shape: many CLIs write a temp file and rename over the
+			// target. rename(2) onto a bind MOUNTPOINT fails with EBUSY, so a tool
+			// that saves this way needs the directory persisted, not the file.
+			probe("rename", `sh -c 'echo x > "$HOME/.claude/.tmp" && mv "$HOME/.claude/.tmp" "$HOME/.claude/.credentials.json"' 2>/dev/null`)+
+			// Everything else in the same directory is still throwaway.
+			`echo edited > "$HOME/.claude/settings.json"`)
+
+	if !r.has("wrote:ok") {
+		t.Fatalf("persisted file was not writable inside the jail:\n%s\n%s", r.stdout, r.stderr)
+	}
+	if b, _ := os.ReadFile(tok); !strings.Contains(string(b), "new") {
+		t.Errorf("persist-path did not reach the host: %q", b)
+	}
+	e.mustContain(t, ".claude/settings.json", decoys[".claude/settings.json"])
+}
+
+// A persist line naming a path that does not exist on the host cannot be bound.
+// It must say so: silence here reproduces the exact failure the feature fixes.
+func TestPersistPath_MissingSourceWarns(t *testing.T) {
+	e := newEnv(t)
+	r := e.run(t, []string{"--persist-path", ".claude/nope.json"}, `echo ran`)
+	if !strings.Contains(r.stderr, "nope.json") {
+		t.Errorf("a persist path with no host source must warn, got stderr:\n%s", r.stderr)
+	}
+}
+
+// persist is also an un-mask, same as ro/rw — otherwise the mask loop (bound
+// last, so it wins) would blank out the very credential you asked to keep.
+func TestPersistPath_UnmasksCredentialStore(t *testing.T) {
+	e := newEnv(t)
+	p := e.path(".config/gh/hosts.yml")
+	os.MkdirAll(filepath.Dir(p), 0o700)
+	os.WriteFile(p, []byte("oauth_token: NEEDED-BY-GH"), 0o600)
+
+	r := e.run(t, []string{"--persist-path", ".config/gh"}, `cat "$HOME/.config/gh/hosts.yml" 2>/dev/null; echo "[end]"`)
+	if !strings.Contains(r.stdout, "NEEDED-BY-GH") {
+		t.Errorf("persist did not un-mask the credential store:\n%s", r.stdout)
+	}
+}
+
 // --persist restores real writes — and with them the original trap, documented
 // here so the trade-off is explicit rather than discovered the hard way.
 //
@@ -378,6 +455,53 @@ func TestRlimit_OversizedWriteIsRefused(t *testing.T) {
 	r := e.run(t, nil, `ulimit -f 1; dd if=/dev/zero of="$HOME/.cache/big" bs=1M count=4 2>&1 | tail -1; `+
 		probe("capped", `[ ! -s "$HOME/.cache/big" ] || [ "$(stat -c%s "$HOME/.cache/big")" -lt 4194304 ]`))
 	r.assert(t, "capped", true)
+}
+
+// --------------------------------------------------------------------------- //
+// ssh-agent passthrough.
+// --------------------------------------------------------------------------- //
+
+// The agent socket is a signing oracle for every key you have loaded, so an
+// SSH_AUTH_SOCK sitting in the host environment must not ride along on its own.
+func TestSSHAgent_NotForwardedByDefault(t *testing.T) {
+	e := newEnv(t)
+	r := e.runIn(t, e.proj, []string{"--dry-run"}, "", "SSH_AUTH_SOCK=/run/user/0/decoy-agent")
+	if strings.Contains(r.stdout, "SSH_AUTH_SOCK") || strings.Contains(r.stdout, "decoy-agent") {
+		t.Errorf("default run forwards the agent socket:\n%s", r.stdout)
+	}
+}
+
+// Opting in binds the socket AND known_hosts — without the latter every push
+// dies on "Host key verification failed" and the flag looks broken.
+func TestSSHAgent_OptInBindsSocketAndKnownHosts(t *testing.T) {
+	e := newEnv(t)
+	sock := filepath.Join(e.root, "agent.sock")
+	l, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+
+	r := e.runIn(t, e.proj, []string{"--ssh-agent", "--dry-run"}, "", "SSH_AUTH_SOCK="+sock)
+	for _, want := range []string{sock, "SSH_AUTH_SOCK", "known_hosts"} {
+		if !strings.Contains(r.stdout, want) {
+			t.Errorf("--ssh-agent did not bind %s:\n%s", want, r.stdout)
+		}
+	}
+	// The keys themselves never cross the boundary — that is the whole trade.
+	if strings.Contains(r.stdout, "id_rsa") {
+		t.Errorf("--ssh-agent bound private key material:\n%s", r.stdout)
+	}
+}
+
+// Asking for the agent when there is none must fail loudly, not silently produce
+// a jail where every git push fails for a reason nobody can see.
+func TestSSHAgent_MissingAgentIsAnError(t *testing.T) {
+	e := newEnv(t)
+	r := e.runIn(t, e.proj, []string{"--ssh-agent", "--dry-run"}, "", "SSH_AUTH_SOCK=/run/user/0/nope.sock")
+	if r.code == 0 {
+		t.Errorf("--ssh-agent with a dead socket exited 0:\n%s", r.stdout)
+	}
 }
 
 // --------------------------------------------------------------------------- //

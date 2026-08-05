@@ -259,6 +259,7 @@ func outer(argv []string) {
 	fMemMax := fs.String("mem-max", "", "")
 	fNetPorts := fs.String("net-ports", "", "")
 	fDisplay := fs.Bool("display", false, "")
+	fSSHAgent := fs.Bool("ssh-agent", false, "")
 	fNoNet := fs.Bool("no-net", false, "")
 	fNoLandlock := fs.Bool("no-landlock", false, "")
 	fKeepEnv := fs.Bool("keep-env", false, "")
@@ -266,9 +267,12 @@ func outer(argv []string) {
 	// Per-run equivalents of the config file's "ro"/"rw" lines, for a path this
 	// one run needs and every future run should not. Repeatable; same $HOME-relative
 	// resolution, same bindSafe rejection, same un-masking power as the file.
-	var fRO, fRW stringList
+	var fRO, fRW, fPersistPath stringList
 	fs.Var(&fRO, "ro", "")
 	fs.Var(&fRW, "rw", "")
+	// Per-path form of --persist: one path whose writes must outlive the jail
+	// (a login token), without making the whole $HOME allowlist real.
+	fs.Var(&fPersistPath, "persist-path", "")
 	if err := fs.Parse(argv); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			usage()
@@ -278,7 +282,7 @@ func outer(argv []string) {
 	}
 
 	gpu, overlay, landlockOn, rlimits := !*fNoGPU, !*fPersist, !*fNoLandlock, !*fNoRlimits
-	display, netIsolate := *fDisplay, *fNoNet
+	display, netIsolate, sshAgent := *fDisplay, *fNoNet, *fSSHAgent
 	keepEnv, dry, allowUserns, rawSock := *fKeepEnv, *fDry, *fAllowUserns, *fRawSock
 	memMax, netPorts := *fMemMax, *fNetPorts
 	// No container socket is bound unless explicitly asked for. On-by-default
@@ -328,6 +332,7 @@ func outer(argv []string) {
 	// so a flag path and a config path are indistinguishable from this point on.
 	uc.ro = append(uc.ro, fRO...)
 	uc.rw = append(uc.rw, fRW...)
+	uc.persist = append(uc.persist, fPersistPath...)
 
 	// Patched /etc/hosts and /etc/resolv.conf. /run is tmpfs'd (empty) inside
 	// the jail, which breaks the usual resolv.conf -> /run/.../stub-resolv.conf
@@ -372,6 +377,25 @@ func outer(argv []string) {
 	add("--symlink", "usr/sbin", "/sbin")
 	add("--ro-bind", "/etc", "/etc")
 	add("--ro-bind", hostsFile, "/etc/hosts")
+
+	// ssh fatals ("Bad owner or permissions") on any Include'd config file whose
+	// owner is neither root nor the caller. bwrap maps ONE uid, so every
+	// root-owned file reads as nobody (65534) inside the jail and every
+	// /etc/ssh/ssh_config.d drop-in trips that check — `git push` over ssh dies
+	// before it opens a socket. Re-serve the same bytes from a file we own.
+	sshDropIns, _ := filepath.Glob("/etc/ssh/ssh_config.d/*.conf")
+	for _, p := range sshDropIns {
+		// Bind at the symlink's TARGET: these drop-ins are usually symlinks into
+		// /usr/lib, and bwrap cannot create a mountpoint at a dangling-in-the-jail
+		// symlink. ssh follows the link and lands on our copy either way.
+		if t, err := filepath.EvalSymlinks(p); err == nil {
+			p = t
+		}
+		if data, err := os.ReadFile(p); err == nil {
+			add("--ro-bind", tempWith("azkaban-sshconf-", string(data)), p)
+		}
+	}
+
 	if exists("/opt") {
 		add("--ro-bind", "/opt", "/opt")
 	}
@@ -567,6 +591,36 @@ func outer(argv []string) {
 		}
 	}
 
+	// Per-path persistence. The overlay above is all-or-nothing per RUN, which
+	// makes "keep my login token" cost "make every allowlist dir really
+	// destroyable" — the exact trade --persist was written to avoid. These are
+	// bound to the real host inode, AFTER the rw loop so they win over the
+	// parent directory's tmp-overlay: a nested bind that comes FIRST is simply
+	// covered by the overlay mounted on top of it and silently does nothing.
+	//
+	// Deliberately narrow: name the file, not the directory. `persist .claude`
+	// works and is a legitimate choice, but it hands back the whole rm -rf.
+	for _, rel := range uc.persist {
+		p := resolve(home, rel)
+		if !bindSafe(home, p) {
+			fatal(2, "refusing persist bind "+p+": it would re-expose $HOME (or /) that the jail just hid")
+		}
+		if !exists(p) {
+			// Loud, because silence is the failure this whole feature exists to
+			// fix: a persist line that does nothing looks exactly like one that
+			// works until the token is gone.
+			fmt.Fprintln(os.Stderr, "azkaban: WARNING: persist "+rel+" ignored: no such path on the host. "+
+				"A bind needs an existing source — create it outside the jail first.")
+			continue
+		}
+		add("--bind", p, p)
+		if isDir(p) {
+			llRW = append(llRW, p)
+		} else {
+			llRWFiles = append(llRWFiles, p)
+		}
+	}
+
 	// ~/.config is writable above (tools need it), which would let the jailed
 	// process rewrite ~/.config/azkaban/config — the file loadUserBinds trusts —
 	// and escape on the NEXT run with a single `rw /` line. Freeze it and the
@@ -592,7 +646,7 @@ func outer(argv []string) {
 	// is left alone — that is the escape hatch, no extra syntax needed.
 	for _, rel := range slices.Concat(maskPaths, uc.mask) {
 		p := resolve(home, rel)
-		if !exists(p) || mentionedInConfig(rel, p, home, uc.ro, uc.rw) {
+		if !exists(p) || mentionedInConfig(rel, p, home, uc.ro, uc.rw, uc.persist) {
 			continue
 		}
 		if isDir(p) {
@@ -600,6 +654,34 @@ func outer(argv []string) {
 			continue
 		}
 		add("--ro-bind", maskFileOnce(&maskFile), p)
+	}
+
+	// ssh-agent passthrough. The private keys stay on the host: what crosses the
+	// boundary is a SIGNING ORACLE, not the key material, so an exfiltrated jail
+	// loses nothing permanent — the oracle dies with the socket. It is still real
+	// power while the jail runs: anything inside can authenticate as you to any
+	// host your loaded keys open, so this is opt-in and stays off by default.
+	// `ssh-add -c` on the host narrows it further, to one confirmation prompt per
+	// signature. Bound after the $HOME tmpfs and the mask loop so both binds win.
+	if sshAgent {
+		sock := os.Getenv("SSH_AUTH_SOCK")
+		switch {
+		case sock == "":
+			fatal(1, "--ssh-agent: SSH_AUTH_SOCK is not set; no agent to forward")
+		case !exists(sock):
+			fatal(1, "--ssh-agent: no socket at "+sock)
+		}
+		add("--bind", sock, sock)
+		add("--setenv", "SSH_AUTH_SOCK", sock)
+		llRWFiles = append(llRWFiles, sock)
+
+		// Without known_hosts every push dies on "Host key verification failed",
+		// which makes the flag look broken. This file holds no secret — only the
+		// list of hosts you have reached, which is the small leak the flag costs.
+		if kh := filepath.Join(home, ".ssh", "known_hosts"); exists(kh) {
+			add("--ro-bind", kh, kh)
+			llROFiles = append(llROFiles, kh)
+		}
 	}
 
 	// Project working dir: writable, and made the cwd.
@@ -908,8 +990,8 @@ func cgroupUnavailable(why string) *os.File {
 // mentionedInConfig reports whether the user's trusted config names this path,
 // in which case it is not masked — that is the opt-out for someone who genuinely
 // needs `gh` or a registry login inside the jail.
-func mentionedInConfig(rel, abs, home string, userRO, userRW []string) bool {
-	for _, e := range slices.Concat(userRO, userRW) {
+func mentionedInConfig(rel, abs, home string, userRO, userRW, userPersist []string) bool {
+	for _, e := range slices.Concat(userRO, userRW, userPersist) {
 		if e == rel || resolve(home, e) == abs {
 			return true
 		}
@@ -1037,10 +1119,12 @@ func bindSafe(home, p string) bool {
 // at ~/.config/azkaban/config. That file is trusted, which is only true because
 // the jail re-binds its directory read-only (see azkabanCfgDir) — the repo's own
 // files are never consulted.
-// Format: one "ro <path>", "rw <path>", "env <NAME>" or "mask <path>" per line;
-// # comments; blank lines ok. Paths are $HOME-relative unless absolute.
-// "mask" blanks a path out; naming a masked path with "ro"/"rw" un-masks it.
-type userConf struct{ ro, rw, env, mask []string }
+// Format: one "ro <path>", "rw <path>", "persist <path>", "env <NAME>" or
+// "mask <path>" per line; # comments; blank lines ok. Paths are $HOME-relative
+// unless absolute.
+// "mask" blanks a path out; naming a masked path with "ro"/"rw"/"persist"
+// un-masks it. "persist" also opts that one path out of the throwaway overlay.
+type userConf struct{ ro, rw, env, mask, persist []string }
 
 func loadUserBinds(home string) userConf {
 	data, err := os.ReadFile(filepath.Join(home, azkabanCfgDir, "config"))
@@ -1070,6 +1154,8 @@ func parseUserBinds(data string) userConf {
 			c.env = append(c.env, val)
 		case "mask":
 			c.mask = append(c.mask, val)
+		case "persist":
+			c.persist = append(c.persist, val)
 		}
 	}
 	return c
@@ -1119,6 +1205,12 @@ func usage() {
   --display      pass through X11/wayland/XAUTHORITY + the wayland/pulse sockets
                  from /run/user (OFF by default; ssh-agent, gpg-agent, dbus and
                  any rootless container socket in there stay hidden)
+  --ssh-agent    forward $SSH_AUTH_SOCK (+ known_hosts read-only) so git push
+                 over ssh works. The keys stay on the host — the jail gets a
+                 signing oracle, not the key — but that oracle authenticates as
+                 you to every host they open, for as long as the jail runs.
+                 "ssh-add -c" makes each signature prompt on the host. OFF by
+                 default; ~/.ssh itself is never bound.
   --allow-userns permit nested user namespaces (needed by Chrome/Electron tools)
   --no-net       isolate the network in a new namespace (breaks internet access)
   --net-ports L  allow outbound TCP only to these ports (comma-separated), enforced
@@ -1138,6 +1230,12 @@ func usage() {
   --rw PATH      same, writable (still overlaid unless --persist). Repeatable.
                  $HOME-relative; / and $HOME are refused; un-masks any credential
                  store named. For every run, use "ro"/"rw" lines in the config.
+  --persist-path PATH
+                 exempt ONE path from the throwaway overlay: writes to it land on
+                 the host, everything else still evaporates. For the file a tool
+                 must keep across runs (a login token) without --persist making
+                 the whole allowlist destroyable. Repeatable; name the file, not
+                 its directory. For every run, use "persist" lines in the config.
   --dry-run      print the bwrap command instead of running it
   -h, --help     this help
 `)
@@ -1180,4 +1278,15 @@ func usage() {
 //   8. --ro/--rw widen the allowlist for one run and un-mask any credential
 //      store they name. No new vector — a pasted `--rw ~` is just an easier way
 //      to reach 2 and 7 than editing the config. bindSafe still refuses / and $HOME.
+//   9. persist/--persist-path is 7 scoped to one path: that path is really
+//      writable and really deletable, everything else stays overlaid. A file is
+//      a small target; `persist .claude` is 2 and 7 for that whole directory,
+//      which is the point of naming the file instead. bindSafe still applies.
+//  10. --ssh-agent is 3's ssh-agent half, deliberately and alone: the jail can
+//      sign with your loaded keys and so push, pull and log in as you anywhere
+//      they are authorized, for the life of the jail. It is strictly narrower
+//      than the alternative it exists to prevent (`ro ~/.ssh`, which hands over
+//      the key itself, permanently) and than --display, which grants the same
+//      oracle plus X11 and dbus. `ssh-add -c` on the host reduces it to one
+//      confirmation prompt per signature; there is no in-jail equivalent.
 // --------------------------------------------------------------------------- //

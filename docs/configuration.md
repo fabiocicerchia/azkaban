@@ -13,6 +13,7 @@ ignored. Paths are `$HOME`-relative unless absolute.
 # ~/.config/azkaban/config
 ro  /etc/ssl/certs          # bind read-only
 rw  /srv/shared-cache       # bind read-write (overlaid like the rest)
+persist .claude/.credentials.json   # writable AND not overlaid — survives exit
 env ANTHROPIC_API_KEY       # forward one host variable
 mask .config/mytool/token   # blank out a path azkaban does not know about
 ```
@@ -37,6 +38,110 @@ azkaban --ro /opt/toolchain --rw ~/scratch claude
 
 Flag for a path *this* run needs, file for a path *every* run needs. `--rw` is
 still overlaid; add `--persist` if the writes must survive.
+
+## Keeping one path (`persist`)
+
+`--persist` is all-or-nothing: to keep a login token you make every `$HOME`
+allowlist directory really destroyable again. `persist PATH` is the per-path
+form — that one path is bound to the real host inode, everything else stays a
+throwaway overlay.
+
+```
+# ~/.config/azkaban/config
+persist .claude/.credentials.json
+```
+
+```bash
+azkaban --persist-path .claude/.credentials.json claude   # same, one run only
+```
+
+The token written by `/login` inside the jail now lands on the host; a
+`rm -rf ~/.claude` in the same run still loses nothing else. Same
+`$HOME`-relative resolution, same refusal of `/` and `$HOME`, and it un-masks
+like `ro`/`rw`.
+
+Two things to know:
+
+- **The source must already exist.** A bind needs something to bind. If the path
+  is missing azkaban warns on stderr and carries on without it — create it
+  outside the jail first (for Claude Code: log in once on the host).
+- **Name the file, not the directory,** unless the tool saves atomically.
+  `rename(2)` onto a bind *mountpoint* fails with `EBUSY`, so a tool that writes
+  `x.tmp` and renames it over the target needs `persist .claude` (the directory)
+  instead. Directory persistence hands back the `rm -rf` exposure for that
+  directory — which is the trade `--persist` makes for all of them.
+
+### Claude Code needs two paths
+
+The token alone is not the login. `~/.claude.json` holds the account it belongs
+to (`oauthAccount`), the onboarding flag, and the per-project "do you trust this
+folder" answers — and it is a *file* in the writable allowlist, so by default it
+is a throwaway copy and every write to it is dropped on exit. Persist the token
+and watch the account state revert on the next run, and Claude Code asks you to
+log in again with a perfectly good token sitting on disk.
+
+```
+# ~/.config/azkaban/config
+persist .claude/.credentials.json
+persist .claude.json
+```
+
+Check it from inside the jail — the two lines below are the bind, not the
+overlay:
+
+```bash
+grep -E '\.claude(\.json|/\.cred)' /proc/self/mountinfo
+```
+
+`.claude.json` is a bigger target than the token: it is mutable state a hostile
+tool can now rewrite for real, not just read. Both files were already fully
+readable in the jail either way, so this costs integrity, not secrecy.
+
+Claude Code writes both atomically, and falls back to `copyFile` when the
+`rename` hits `EBUSY`/`EXDEV` — so the file-level bind above is enough, and
+`persist .claude` (the whole directory, `rm -rf` and all) is not needed.
+
+`--resume` and `--continue` need a third: transcripts live in
+`~/.claude/projects/<slug>/<session-id>.jsonl`, so with the overlay every session
+is gone the moment the jail exits and `claude --resume <id>` answers "No
+conversation found". This one has to be the *directory* — the session file's name
+is not known in advance:
+
+```
+persist .claude/projects
+```
+
+Transcripts are the one thing here worth losing on purpose; keep the line out if
+you would rather a hostile tool could not read (or delete) past sessions.
+
+## Pushing from inside the jail
+
+`~/.ssh` is not bound, so by default `git push` inside the jail fails with
+`Host key verification failed` — there are no keys, no agent and no
+`known_hosts`. That is the boundary working, not a bug.
+
+`--ssh-agent` is the narrow way through:
+
+```bash
+azkaban --ssh-agent claude
+```
+
+It binds `$SSH_AUTH_SOCK` and `known_hosts` (read-only) and nothing else. The
+private keys never enter the jail — what crosses is a *signing oracle*, so an
+exfiltrated jail keeps nothing after it exits. While it runs, though, anything
+inside can authenticate as you to every host those keys open. `ssh-add -c` on
+the host reduces that to one confirmation prompt per signature.
+
+Do not reach for `ro .ssh` instead. It is the same capability plus permanent
+key theft, and `--display` is the same oracle plus X11 and dbus.
+
+`gh` is a separate problem: if `gh auth status` says `(keyring)`, the token
+lives behind the D-Bus secret service, which the jail does not bind — so `gh`
+inside is unauthenticated and `gh auth login` cannot fix it from there (it would
+try the same keyring, and `ro .config/gh` is read-only besides). With
+`--ssh-agent` you do not need it for pushes; for `gh pr create` you would have
+to hand the jail a token via `env GH_TOKEN`, which *is* stealable — prefer
+opening the PR from the host.
 
 ## Credential masking
 
