@@ -52,4 +52,13 @@ jobs:
       # containment tests skip and CI would pass having proved nothing.
       - name: install bubblewrap
         run: sudo apt-get update && sudo apt-get install -y bubblewrap
+
+      # Ubuntu 24.04 ships kernel.apparmor_restrict_unprivileged_userns=1, which
+      # denies the uid map bwrap needs:
+      #     bwrap: setting up uid map: Permission denied
+      # Installing bwrap is therefore not enough — requireJail sees the binary,
+      # declines to skip, and every containment test fails with an empty jail.
+      - name: allow unprivileged user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
       - run: CGO_ENABLED=0 go test ./...
