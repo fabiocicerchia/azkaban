@@ -4,6 +4,7 @@
 [![Security](https://github.com/fabiocicerchia/azkaban/actions/workflows/security.yml/badge.svg)](https://github.com/fabiocicerchia/azkaban/actions/workflows/security.yml)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/fabiocicerchia/azkaban/badge)](https://securityscorecards.dev/viewer/?uri=github.com/fabiocicerchia/azkaban)
+[![CI carbon](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/fabiocicerchia/azkaban/gh-pages/badge.json)](.github/workflows/carbon-badge.yml)
 
 **A jail for AI CLIs.** `azkaban` confines a coding agent (Claude Code, aider,
 etc.) to a single project directory using [bubblewrap](https://github.com/containers/bubblewrap)
