@@ -14,7 +14,7 @@ help: ## Show this help
 	  awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
 
 .PHONY: setup
-setup: ## Install the pre-commit hooks
+setup: ## Install the pre-commit hook
 	@command -v pre-commit >/dev/null 2>&1 && pre-commit install || true
 
 .PHONY: deps
