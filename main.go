@@ -152,6 +152,9 @@ const selfInJail = "/tmp/.azkaban-self"
 // must never be able to write it.
 const azkabanCfgDir = ".config/azkaban"
 
+// main - Dispatches to one of the two roles. --landlock-exec means this
+// process is already inside bwrap and is the inner stage; anything else is the
+// outer stage that has yet to build the jail.
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "--landlock-exec" {
 		landlockStage(os.Args[2:]) // runs inside bwrap
@@ -166,6 +169,10 @@ func main() {
 // printed verbatim by --dry-run).
 // --------------------------------------------------------------------------- //
 
+// landlockStage - Applies the Landlock ruleset and execs the target command.
+// Runs INSIDE bwrap, so the mount layer is already in place; this is layer
+// three, and it is the only one that survives into the process the user asked
+// for.
 func landlockStage(args []string) {
 	if len(args) < 2 || args[0] != "--" {
 		fatal(2, "usage: --landlock-exec -- <cmd> [args...]")
@@ -240,6 +247,10 @@ func landlockStage(args []string) {
 // Outer role: parse flags, build the bwrap invocation, run it.
 // --------------------------------------------------------------------------- //
 
+// outer - Parses the flags, builds the bwrap invocation from the allowlists at
+// the top of this file, and runs it. Everything the jail will be is decided
+// here; --dry-run prints the result instead of executing it, which is what
+// makes the decision auditable.
 func outer(argv []string) {
 	// flag.Parse stops at the first non-flag argument and honours "--", which is
 	// exactly the "everything from here on is the command" rule this needs.
@@ -834,8 +845,9 @@ func outer(argv []string) {
 // Helpers.
 // --------------------------------------------------------------------------- //
 
-// writeHosts copies /etc/hosts and makes sure the jail's own hostname resolves,
-// since --unshare-uts + --hostname would otherwise leave it unresolvable.
+// writeHosts - Copies /etc/hosts and makes sure the jail's own hostname
+// resolves, since --unshare-uts + --hostname would otherwise leave it
+// unresolvable.
 func writeHosts() string {
 	data, _ := os.ReadFile("/etc/hosts")
 	out := string(data)
@@ -845,7 +857,7 @@ func writeHosts() string {
 	return tempWith("azkaban-hosts-", out)
 }
 
-// writeResolv copies the REAL resolv.conf. /run is an empty tmpfs inside the
+// writeResolv - Copies the REAL resolv.conf. /run is an empty tmpfs inside the
 // jail, which breaks the usual /etc/resolv.conf -> /run/.../stub-resolv.conf
 // symlink, so a concrete copy has to be re-provided.
 func writeResolv() string {
@@ -857,7 +869,7 @@ func writeResolv() string {
 	return tempWith("azkaban-resolv-", string(data))
 }
 
-// warnTIOCSTI flags the terminal-injection vector when the kernel permits it.
+// warnTIOCSTI - Flags the terminal-injection vector when the kernel permits it.
 // Kernels >= 6.2 gate TIOCSTI behind dev.tty.legacy_tiocsti (default 0); on
 // older kernels the knob is absent and the ioctl always works.
 func warnTIOCSTI() {
@@ -886,6 +898,9 @@ const (
 	maxFiles    = 8192    // fd exhaustion, incl. flooding the docker proxy
 )
 
+// applyRlimits - Sets the per-process caps above on this process, so bwrap and
+// everything it spawns inherit them. An existing hard limit that is already
+// lower wins: raising it would be a privilege the caller did not ask for.
 func applyRlimits() {
 	for _, l := range []struct {
 		res  int
@@ -924,6 +939,10 @@ func applyRlimits() {
 // not stop the jail from running.
 // --------------------------------------------------------------------------- //
 
+// setupCgroup - Creates the sibling cgroup and returns a handle to it, or nil
+// when the tree is unusable. The caller passes the handle to clone3 so the
+// child lands in the cgroup before it can fork; nil simply means the memory cap
+// is not enforced, never that the jail should refuse to start.
 func setupCgroup(memMax string, pidsMax int) *os.File {
 	data, err := os.ReadFile("/proc/self/cgroup")
 	if err != nil {
@@ -973,7 +992,7 @@ func setupCgroup(memMax string, pidsMax int) *os.File {
 	return fd
 }
 
-// maskFileOnce lazily creates the single empty file used to blank out every
+// maskFileOnce - Lazily creates the single empty file used to blank out every
 // masked path; one file serves them all.
 func maskFileOnce(p *string) string {
 	if *p == "" {
@@ -982,14 +1001,17 @@ func maskFileOnce(p *string) string {
 	return *p
 }
 
+// cgroupUnavailable - Warns once and returns nil, the "no cap" answer every
+// failed step in setupCgroup shares. Loud on purpose: a silently uncapped jail
+// is the one that takes the host down.
 func cgroupUnavailable(why string) *os.File {
 	fmt.Fprintln(os.Stderr, "azkaban: warning: resource cgroup unavailable ("+why+"); memory is NOT capped.")
 	return nil
 }
 
-// mentionedInConfig reports whether the user's trusted config names this path,
-// in which case it is not masked — that is the opt-out for someone who genuinely
-// needs `gh` or a registry login inside the jail.
+// mentionedInConfig - Reports whether the user's trusted config names this
+// path, in which case it is not masked — that is the opt-out for someone who
+// genuinely needs `gh` or a registry login inside the jail.
 func mentionedInConfig(rel, abs, home string, userRO, userRW, userPersist []string) bool {
 	for _, e := range slices.Concat(userRO, userRW, userPersist) {
 		if e == rel || resolve(home, e) == abs {
@@ -999,7 +1021,7 @@ func mentionedInConfig(rel, abs, home string, userRO, userRW, userPersist []stri
 	return false
 }
 
-// llJoin serialises one Landlock allowlist for the AZKABAN_LL_* channel.
+// llJoin - Serialises one Landlock allowlist for the AZKABAN_LL_* channel.
 //
 // The inner stage splits these on "\n", so a path that CONTAINS a newline injects
 // extra entries into the allowlist. `mkdir $'proj\n/run' && cd it && azkaban` was
@@ -1027,9 +1049,10 @@ var bwrapHelp = sync.OnceValue(func() string {
 	return string(out)
 })
 
+// bwrapHas - Reports whether this bubblewrap advertises a flag.
 func bwrapHas(flag string) bool { return strings.Contains(bwrapHelp(), flag) }
 
-// tempCopy duplicates a file into /tmp so it can be bound over the original,
+// tempCopy - Duplicates a file into /tmp so it can be bound over the original,
 // giving a single file the same disposable-write behaviour as --tmp-overlay.
 func tempCopy(src string) (string, error) {
 	data, err := os.ReadFile(src)
@@ -1048,6 +1071,8 @@ var (
 	tempPaths []string
 )
 
+// tempTrack - Records a host path for tempCleanup and hands it back, so a temp
+// file can be created and registered in one expression.
 func tempTrack(p string) string {
 	tempMu.Lock()
 	tempPaths = append(tempPaths, p)
@@ -1055,6 +1080,9 @@ func tempTrack(p string) string {
 	return p
 }
 
+// tempCleanup - Removes every tracked temp path. Safe to call twice: the list
+// is emptied under the lock, so the signal handler and the normal exit path
+// cannot double-remove or race.
 func tempCleanup() {
 	tempMu.Lock()
 	defer tempMu.Unlock()
@@ -1064,7 +1092,7 @@ func tempCleanup() {
 	tempPaths = nil
 }
 
-// cleanupOnSignal removes the temp files on Ctrl-C. It restores the default
+// cleanupOnSignal - Removes the temp files on Ctrl-C. It restores the default
 // handler and re-raises, so the exit status still reflects the signal.
 func cleanupOnSignal() {
 	ch := make(chan os.Signal, 1)
@@ -1077,6 +1105,9 @@ func cleanupOnSignal() {
 	}()
 }
 
+// tempWith - Writes content to a new /tmp file and tracks it. A failure here
+// is fatal rather than degraded: every caller is building a file the jail is
+// about to have bound over a real one.
 func tempWith(prefix, content string) string {
 	f, err := os.CreateTemp("/tmp", prefix)
 	if err != nil {
@@ -1087,20 +1118,23 @@ func tempWith(prefix, content string) string {
 	return tempTrack(f.Name())
 }
 
-// splitEnv reads one AZKABAN_LL_* allowlist. FieldsFunc drops empty fields, so
-// blank entries and a trailing newline need no special-casing.
+// splitEnv - Reads one AZKABAN_LL_* allowlist. FieldsFunc drops empty fields,
+// so blank entries and a trailing newline need no special-casing.
 func splitEnv(k string) []string {
 	return strings.FieldsFunc(os.Getenv(k), func(r rune) bool { return r == '\n' })
 }
 
-// exists follows symlinks on purpose: bwrap resolves bind SOURCES, so a dangling
-// symlink is not a usable source and must not be offered as one (Lstat would say
-// it exists and bwrap would then hard-fail with "Can't find source path").
+// exists - Follows symlinks on purpose: bwrap resolves bind SOURCES, so a
+// dangling symlink is not a usable source and must not be offered as one (Lstat
+// would say it exists and bwrap would then hard-fail with "Can't find source
+// path").
 func exists(p string) bool { _, err := os.Stat(p); return err == nil }
-func isDir(p string) bool  { fi, err := os.Stat(p); return err == nil && fi.IsDir() }
 
-// resolve turns a config entry into an absolute path: absolute entries are used
-// as-is, everything else is relative to $HOME.
+// isDir - Reports whether p is a directory, following symlinks like exists.
+func isDir(p string) bool { fi, err := os.Stat(p); return err == nil && fi.IsDir() }
+
+// resolve - Turns a config entry into an absolute path: absolute entries are
+// used as-is, everything else is relative to $HOME.
 func resolve(home, p string) string {
 	if filepath.IsAbs(p) {
 		return p
@@ -1108,7 +1142,7 @@ func resolve(home, p string) string {
 	return filepath.Join(home, p)
 }
 
-// bindSafe rejects a writable bind that would undo the home tmpfs: "/", $HOME
+// bindSafe - Rejects a writable bind that would undo the home tmpfs: "/", $HOME
 // itself, or any ancestor of $HOME re-exposes every path the jail just hid.
 func bindSafe(home, p string) bool {
 	p = filepath.Clean(p)
@@ -1126,6 +1160,8 @@ func bindSafe(home, p string) bool {
 // un-masks it. "persist" also opts that one path out of the throwaway overlay.
 type userConf struct{ ro, rw, env, mask, persist []string }
 
+// loadUserBinds - Reads ~/.config/azkaban/config, or an empty config when
+// there is none. A missing file is the normal case, not an error.
 func loadUserBinds(home string) userConf {
 	data, err := os.ReadFile(filepath.Join(home, azkabanCfgDir, "config"))
 	if err != nil {
@@ -1134,6 +1170,9 @@ func loadUserBinds(home string) userConf {
 	return parseUserBinds(string(data))
 }
 
+// parseUserBinds - Parses the config format. Unknown keywords and malformed
+// lines are skipped rather than rejected: this file is trusted input, and a
+// typo must not stop the jail from starting with the rest of the list.
 func parseUserBinds(data string) userConf {
 	var c userConf
 	for _, line := range strings.Split(data, "\n") {
@@ -1164,9 +1203,16 @@ func parseUserBinds(data string) userConf {
 // stringList collects a repeatable string flag ("--ro A --ro B") into a slice.
 type stringList []string
 
-func (s *stringList) String() string     { return strings.Join(*s, ",") }
+// String - Renders the collected values, for flag's usage output.
+func (s *stringList) String() string { return strings.Join(*s, ",") }
+
+// Set - Appends one occurrence of the flag rather than replacing the previous
+// one, which is what makes it repeatable.
 func (s *stringList) Set(v string) error { *s = append(*s, v); return nil }
 
+// shquote - Renders a command so it can be pasted into a shell verbatim. Used
+// only by --dry-run: an audit line nobody can copy and run is not an audit
+// line.
 func shquote(args []string) string {
 	var b strings.Builder
 	for i, a := range args {
@@ -1182,12 +1228,18 @@ func shquote(args []string) string {
 	return b.String()
 }
 
+// fatal - Cleans up the temp files, prints the message and exits. os.Exit does
+// not run defers, so the cleanup has to happen here rather than being trusted
+// to the caller.
 func fatal(code int, msg string) {
 	tempCleanup() // os.Exit does not run defers
 	fmt.Fprintln(os.Stderr, "azkaban: "+msg)
 	os.Exit(code)
 }
 
+// usage - Prints the flag reference. Hand-written rather than generated from
+// the FlagSet: the defaults are the security model, and each one needs a
+// sentence saying what it costs to change it.
 func usage() {
 	fmt.Print(`azkaban [flags] [--] <command> [args...]
 
