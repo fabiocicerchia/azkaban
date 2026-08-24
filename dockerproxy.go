@@ -41,9 +41,9 @@ import (
 	"time"
 )
 
-// startDockerFilterProxy listens on a fresh unix socket, forwards to realSock,
-// and returns the proxy socket path (to be bound into the jail). cwd is the only
-// host directory bind mounts are permitted to reach.
+// startDockerFilterProxy - Listens on a fresh unix socket, forwards to
+// realSock, and returns the proxy socket path (to be bound into the jail). cwd
+// is the only host directory bind mounts are permitted to reach.
 func startDockerFilterProxy(realSock, cwd string) (string, error) {
 	dir, err := os.MkdirTemp("/tmp", "azkaban-dockerproxy-")
 	if err != nil {
@@ -95,9 +95,10 @@ var allowedRoots = map[string]bool{
 	"session": true, "grpc": true,
 }
 
-// apiRoot strips the optional /vX.YZ version prefix and returns the first path
-// segment. Matching on the segment (not a suffix) is what makes the allowlist
-// total: an unmodelled endpoint cannot slip through by not matching a pattern.
+// apiRoot - Strips the optional /vX.YZ version prefix and returns the first
+// path segment. Matching on the segment (not a suffix) is what makes the
+// allowlist total: an unmodelled endpoint cannot slip through by not matching a
+// pattern.
 func apiRoot(p string) string {
 	p = strings.TrimPrefix(p, "/")
 	if i := strings.IndexByte(p, '/'); i > 1 && p[0] == 'v' && strings.ContainsAny(p[1:i], "0123456789") {
@@ -109,9 +110,10 @@ func apiRoot(p string) string {
 	return p
 }
 
-// destructiveReason refuses the calls that destroy data which has no other copy.
-// The rest of the filter blocks ESCAPE; this blocks LOSS, which under azkaban's
-// threat model — an agent doing damage by accident — is the likelier harm.
+// destructiveReason - Refuses the calls that destroy data which has no other
+// copy. The rest of the filter blocks ESCAPE; this blocks LOSS, which under
+// azkaban's threat model — an agent doing damage by accident — is the likelier
+// harm.
 //
 // Deliberately narrow. `docker rm` and `docker rmi` stay allowed: containers and
 // images are rebuildable, and blocking them would break `--rm` cleanup and every
@@ -129,6 +131,10 @@ func destructiveReason(r *http.Request) string {
 	return ""
 }
 
+// dockerFilterHandler - Wraps the reverse proxy with the filter, in the order
+// the checks get cheaper to fail: the destructive verbs, then the endpoint
+// allowlist, then the create bodies. Every denial is printed to the host's
+// stderr, because a silently filtered API call looks like a docker bug.
 func dockerFilterHandler(proxy http.Handler, rootReal string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if reason := destructiveReason(r); reason != "" {
@@ -160,9 +166,9 @@ func dockerFilterHandler(proxy http.Handler, rootReal string) http.Handler {
 	})
 }
 
-// guarded reports whether a request creates a container or volume — the only
-// two endpoints that can introduce a host bind mount. Paths are version-prefixed
-// (e.g. /v1.45/containers/create), so match on the suffix.
+// guarded - Reports whether a request creates a container or volume — the only
+// two endpoints that can introduce a host bind mount. Paths are
+// version-prefixed (e.g. /v1.45/containers/create), so match on the suffix.
 func guarded(r *http.Request) bool {
 	if r.Method != http.MethodPost {
 		return false
@@ -172,6 +178,8 @@ func guarded(r *http.Request) bool {
 		strings.HasSuffix(p, "/volumes/create")
 }
 
+// denyJSON - Answers 403 in docker's own error shape, so the client inside the
+// jail prints the reason instead of an unmarshalling failure.
 func denyJSON(w http.ResponseWriter, reason string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusForbidden)
@@ -187,7 +195,8 @@ var dangerousCaps = map[string]bool{
 	"MKNOD": true, "SYS_BOOT": true, "ALL": true,
 }
 
-// filterReason returns "" if the create request is allowed, else why it is not.
+// filterReason - Returns "" if the create request is allowed, else why it is
+// not.
 func filterReason(path string, body []byte, rootReal string) string {
 	if strings.HasSuffix(path, "/volumes/create") {
 		return volumeReason(body, rootReal)
@@ -195,6 +204,14 @@ func filterReason(path string, body []byte, rootReal string) string {
 	return containerReason(body, rootReal)
 }
 
+// containerReason - Returns "" if a container-create body is allowed, else why
+// it is not. Everything it refuses is a way out of the container and onto the
+// host: --privileged, device passthrough, an escape-worthy capability, a
+// stripped confinement layer, a shared namespace, or a bind of a host path
+// outside the project dir.
+//
+// An unparsable body is refused, not waved through — a create request the
+// filter cannot read is a create request it cannot vouch for.
 func containerReason(body []byte, rootReal string) string {
 	var b struct {
 		HostConfig *struct {
@@ -281,8 +298,8 @@ func containerReason(body []byte, rootReal string) string {
 	return ""
 }
 
-// driverDeviceReason rejects a local-volume `device` opt that points at a host
-// path outside the project dir. Shared by inline container mounts and
+// driverDeviceReason - Rejects a local-volume `device` opt that points at a
+// host path outside the project dir. Shared by inline container mounts and
 // /volumes/create, since both accept the same bind-in-disguise driver options.
 func driverDeviceReason(opts map[string]string, rootReal string) string {
 	dev := opts["device"]
@@ -292,6 +309,9 @@ func driverDeviceReason(opts map[string]string, rootReal string) string {
 	return ""
 }
 
+// volumeReason - Returns "" if a volume-create body is allowed, else why it is
+// not. Only the driver options matter here: a named volume is harmless, and the
+// one dangerous shape is the local driver pointed at a host path.
 func volumeReason(body []byte, rootReal string) string {
 	var v struct {
 		DriverOpts map[string]string `json:"DriverOpts"`
@@ -304,7 +324,7 @@ func volumeReason(body []byte, rootReal string) string {
 	return driverDeviceReason(v.DriverOpts, rootReal)
 }
 
-// bindReason validates one HostConfig.Binds entry ("src:dst[:opts]"). Named
+// bindReason - Validates one HostConfig.Binds entry ("src:dst[:opts]"). Named
 // volumes and anonymous volumes carry no host path and are allowed; a host path
 // (absolute source) must resolve inside the project dir.
 func bindReason(bind, rootReal string) string {
@@ -321,7 +341,7 @@ func bindReason(bind, rootReal string) string {
 	return ""
 }
 
-// escapesNamespace reports namespace modes that leave the container's own
+// escapesNamespace - Reports namespace modes that leave the container's own
 // namespace: "host", and "container:<id>" — which is transitive, since the
 // target container may itself be running with host networking or host pid.
 func escapesNamespace(mode string) bool {
@@ -329,9 +349,9 @@ func escapesNamespace(mode string) bool {
 	return l == "host" || strings.HasPrefix(l, "container:")
 }
 
-// pathWithin reports whether p (after symlink resolution) is rootReal or lives
-// under it. Resolving symlinks is essential: a symlink inside the project dir
-// pointing at ~/.ssh must NOT be accepted as "within the project dir".
+// pathWithin - Reports whether p (after symlink resolution) is rootReal or
+// lives under it. Resolving symlinks is essential: a symlink inside the project
+// dir pointing at ~/.ssh must NOT be accepted as "within the project dir".
 //
 // KNOWN LIMITATION (TOCTOU): this resolves symlinks when the request is filtered,
 // but dockerd performs the mount moments later. The jailed process owns cwd, so
@@ -344,9 +364,10 @@ func pathWithin(p, rootReal string) bool {
 	return rp == rootReal || strings.HasPrefix(rp, rootReal+string(os.PathSeparator))
 }
 
-// realPath resolves symlinks even when the leaf does not exist yet (docker may
-// create the bind source): it resolves the longest existing ancestor and rejoins
-// the remainder, so a symlinked ancestor cannot smuggle a path out of the root.
+// realPath - Resolves symlinks even when the leaf does not exist yet (docker
+// may create the bind source): it resolves the longest existing ancestor and
+// rejoins the remainder, so a symlinked ancestor cannot smuggle a path out of
+// the root.
 func realPath(p string) string {
 	p = filepath.Clean(p)
 	if rp, err := filepath.EvalSymlinks(p); err == nil {
