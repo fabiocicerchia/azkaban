@@ -204,7 +204,51 @@ func filterReason(path string, body []byte, rootReal string) string {
 	return containerReason(body, rootReal)
 }
 
-// containerReason - Returns "" if a container-create body is allowed, else why
+// containerCreateBody - The subset of Docker's container-create body the
+// filter has to understand. Only the fields that can hand out host access are
+// modelled; the rest of the body is ignored, and a body that will not parse is
+// refused rather than waved through. Written out as named types so the list of
+// what is policed can be read on its own — it is the filter's threat model,
+// and a field missing from here is a field nothing checks.
+type containerCreateBody struct {
+	HostConfig *containerHostConfig `json:"HostConfig"`
+}
+
+// containerHostConfig - The HostConfig fields that can escape the jail.
+type containerHostConfig struct {
+	Binds       []string          `json:"Binds"`
+	Mounts      []containerMount  `json:"Mounts"`
+	Privileged  bool              `json:"Privileged"`
+	Devices     []json.RawMessage `json:"Devices"`
+	CapAdd      []string          `json:"CapAdd"`
+	SecurityOpt []string          `json:"SecurityOpt"`
+	PidMode     string            `json:"PidMode"`
+	IpcMode     string            `json:"IpcMode"`
+	UsernsMode  string            `json:"UsernsMode"`
+	NetworkMode string            `json:"NetworkMode"`
+}
+
+// containerMount - One --mount entry. VolumeOptions is modelled because a
+// local-driver `device` option is a host bind mount in disguise.
+type containerMount struct {
+	Type          string               `json:"Type"`
+	Source        string               `json:"Source"`
+	VolumeOptions *containerVolumeOpts `json:"VolumeOptions"`
+}
+
+// containerVolumeOpts - The volume options of one --mount entry.
+type containerVolumeOpts struct {
+	DriverConfig *volumeDriverConfig `json:"DriverConfig"`
+}
+
+// volumeDriverConfig - A volume driver and its options, the pair that turns a
+// Type=volume mount into a host bind.
+type volumeDriverConfig struct {
+	Name    string            `json:"Name"`
+	Options map[string]string `json:"Options"`
+}
+
+// containerReason -Returns "" if a container-create body is allowed, else why
 // it is not. Everything it refuses is a way out of the container and onto the
 // host: --privileged, device passthrough, an escape-worthy capability, a
 // stripped confinement layer, a shared namespace, or a bind of a host path
@@ -213,29 +257,7 @@ func filterReason(path string, body []byte, rootReal string) string {
 // An unparsable body is refused, not waved through — a create request the
 // filter cannot read is a create request it cannot vouch for.
 func containerReason(body []byte, rootReal string) string {
-	var b struct {
-		HostConfig *struct {
-			Binds  []string `json:"Binds"`
-			Mounts []struct {
-				Type          string `json:"Type"`
-				Source        string `json:"Source"`
-				VolumeOptions *struct {
-					DriverConfig *struct {
-						Name    string            `json:"Name"`
-						Options map[string]string `json:"Options"`
-					} `json:"DriverConfig"`
-				} `json:"VolumeOptions"`
-			} `json:"Mounts"`
-			Privileged  bool              `json:"Privileged"`
-			Devices     []json.RawMessage `json:"Devices"`
-			CapAdd      []string          `json:"CapAdd"`
-			SecurityOpt []string          `json:"SecurityOpt"`
-			PidMode     string            `json:"PidMode"`
-			IpcMode     string            `json:"IpcMode"`
-			UsernsMode  string            `json:"UsernsMode"`
-			NetworkMode string            `json:"NetworkMode"`
-		} `json:"HostConfig"`
-	}
+	var b containerCreateBody
 	if err := json.Unmarshal(body, &b); err != nil {
 		return "unparsable container-create body"
 	}
