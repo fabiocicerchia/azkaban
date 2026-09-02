@@ -1,0 +1,11 @@
+# Fingerprints gitleaks should not report, one per line, as
+# <commit>:<path>:<rule>:<line>.
+#
+# 508f0158 — audit_test.go carried a fixture shaped like a GitHub PAT, for the
+# test that redactArgv() blanks a bare high-entropy argument. It was never a
+# credential, and the fixture has since been changed to something that is not
+# PAT-shaped: a fake secret that fails the secret scan teaches people to wave
+# the scan through. The string is still in this branch's history, which is what
+# gitleaks scans, so the old fingerprint is silenced here rather than by
+# rewriting commits other people may have fetched.
+508f01584ec7aecb5c0c182c4b2a8f6e0ec468df:audit_test.go:github-pat:34
