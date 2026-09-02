@@ -42,9 +42,13 @@ section() { printf '\n\033[1;36m=== %s ===\033[0m\n' "$1"; }
 # Same commands used to vet a compiled ELF/PE/Mach-O by hand. Facts (libs,
 # imports, URLs) are informational — tons of legit binaries have them. Only
 # genuine tamper signals are scored: packing, appended payload, C2 strings.
-audit_binary() {
-  local F="$1" HIGH=0 size tailn
-  size=$(stat -c%s "$F" 2>/dev/null || stat -f%z "$F" 2>/dev/null || echo 0)
+
+# binary_facts - Prints what the binary IS: identity, linked libraries, imported
+# symbols, embedded endpoints. Deliberately unscored — every one of these lines
+# is normal in some legitimate binary, so they are context for the reader, never
+# evidence on their own.
+binary_facts() {
+  local F="$1"
   section "BINARY: $F"
   file "$F"
   command -v sha256sum >/dev/null && echo "sha256: $(sha256sum "$F" | awk '{print $1}')"
@@ -61,26 +65,39 @@ audit_binary() {
   strings -n 6 "$F" | grep -iE 'https?://|([0-9]{1,3}\.){3}[0-9]{1,3}|[a-z0-9.-]+\.onion' \
     | grep -viE 'GLIBC|\.so\.[0-9]|gnu\.org|w3\.org|schemas' | sort -u | head -40 \
     || echo "  (none)"
+}
+
+# binary_appended_signal - Reports a payload appended after the ELF
+# section-header table (the self-extractor trick) and returns how many signals
+# that is: 0 or 1. Its own function because reconstructing where the file OUGHT
+# to end is arithmetic over three readelf fields, and a wrong field silently
+# turns the check off rather than making it fail.
+binary_appended_signal() {
+  local F="$1" size="$2" shoff shent shnum end
+  readelf -h "$F" >/dev/null 2>&1 || return 0
+  shoff=$(readelf -h "$F" | awk -F: '/Start of section headers/{gsub(/[^0-9]/,"",$2);print $2}')
+  shent=$(readelf -h "$F" | awk -F: '/Size of section headers/{gsub(/[^0-9]/,"",$2);print $2}')
+  shnum=$(readelf -h "$F" | awk -F: '/Number of section headers/{gsub(/[^0-9]/,"",$2);print $2}')
+  [ -n "${shoff:-}" ] && [ -n "${shent:-}" ] && [ -n "${shnum:-}" ] || return 0
+  end=$((shoff + shent*shnum))
+  [ $((size - end)) -gt 4096 ] || return 0
+  printf '  \033[1;31m⚠ %-24s\033[0m %d bytes after section headers\n' "appended data" $((size-end))
+  return 1
+}
+
+# binary_tamper_signals - Prints every scored tamper signal and returns how many
+# were found. Unlike B1–B3 above, none of these has an innocent reading in a
+# binary that came out of a build you trust.
+binary_tamper_signals() {
+  local F="$1" HIGH=0 size tailn
+  size=$(stat -c%s "$F" 2>/dev/null || stat -f%z "$F" 2>/dev/null || echo 0)
 
   section "BINARY TRIAGE (tamper signals — scored)"
   # Packing/obfuscation: UPX magic, or almost no printable strings in a big file.
   if grep -aqE 'UPX!|\$Info: This file is packed' "$F"; then
     printf '  \033[1;31m⚠ %-24s\033[0m\n' "packed (UPX)"; HIGH=$((HIGH+1))
   fi
-  # Appended payload after the ELF section-header table (self-extractor trick).
-  if readelf -h "$F" >/dev/null 2>&1; then
-    local shoff shent shnum end
-    shoff=$(readelf -h "$F" | awk -F: '/Start of section headers/{gsub(/[^0-9]/,"",$2);print $2}')
-    shent=$(readelf -h "$F" | awk -F: '/Size of section headers/{gsub(/[^0-9]/,"",$2);print $2}')
-    shnum=$(readelf -h "$F" | awk -F: '/Number of section headers/{gsub(/[^0-9]/,"",$2);print $2}')
-    if [ -n "${shoff:-}" ] && [ -n "${shent:-}" ] && [ -n "${shnum:-}" ]; then
-      end=$((shoff + shent*shnum))
-      if [ $((size - end)) -gt 4096 ]; then
-        printf '  \033[1;31m⚠ %-24s\033[0m %d bytes after section headers\n' "appended data" $((size-end))
-        HIGH=$((HIGH+1))
-      fi
-    fi
-  fi
+  binary_appended_signal "$F" "$size"; HIGH=$((HIGH + $?))
   # Also check the tail for archive magic (zip/7z/xz) appended to the file.
   # Cap byte count to the file size — some `tail` builds (uutils) error on -c
   # larger than the file. ponytail: 256K tail window is plenty for a trailer.
@@ -94,6 +111,15 @@ audit_binary() {
       printf '  \033[1;31m⚠ %-24s\033[0m matches /%s/\n' "C2/pipe-to-shell string" "$pat"; HIGH=$((HIGH+1))
     fi
   done
+  return "$HIGH"
+}
+
+# audit_binary - Facts, then scored signals, then the verdict they add up to.
+# Exit 1 = at least one tamper signal, i.e. triage required.
+audit_binary() {
+  local F="$1" HIGH
+  binary_facts "$F"
+  binary_tamper_signals "$F"; HIGH=$?
 
   printf '\n\033[1m── VERDICT ──\033[0m\n'
   if [ "$HIGH" -gt 0 ]; then
