@@ -30,8 +30,13 @@ func TestRedactArgvKeepsCredentialsOutOfTheRecord(t *testing.T) {
 			[]string{"deploy", "--api-key", "<redacted>", "--region", "eu-west-1"},
 		},
 		{
-			"a bare high-entropy value nobody named",
-			[]string{"curl", "-H", "ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"},
+			// Deliberately not shaped like a real provider's token. The rule
+			// under test is length and alphabet, not a vendor prefix, and a
+			// fixture that looks like a GitHub PAT trips the repo's own
+			// gitleaks scan — a fake secret failing the secret scan teaches
+			// people to ignore it.
+			"a bare token-shaped value nobody named",
+			[]string{"curl", "-H", "not_a_real_token_0000000000000000000000"},
 			[]string{"curl", "-H", "<redacted>"},
 		},
 		{
