@@ -195,6 +195,14 @@ azkaban [flags] [--] <command> [args...]
   --net-ports L  allow outbound TCP only to these ports (comma-separated), enforced
                  by landlock. Blocks localhost services and LAN scanning. UDP and
                  therefore DNS are unaffected. Needs the landlock stage.
+  --net-host H   allow outbound traffic only to this host, through a CONNECT
+                 proxy in the outer process. Repeatable; "*.example.com" covers
+                 subdomains but not the bare domain. TLS is NOT intercepted —
+                 the target is checked and raw bytes relayed. Sets HTTPS_PROXY
+                 in the jail and narrows --net-ports to the proxy, so a client
+                 that ignores the variable is refused by the kernel rather than
+                 connecting directly. Needs the landlock stage. For every run,
+                 use "net <host>" lines in the config.
   --keep-env     inherit the whole host environment (default: clear it and pass
                  only HOME/PATH/TERM/LANG/...; add more with "env NAME" in
                  ~/.config/azkaban/config)

@@ -157,6 +157,63 @@ Details in [containers.md](containers.md).
 
 ---
 
+## Egress filtering by host
+
+`--net-ports` restricts outbound TCP *ports* at the kernel. That closes
+localhost services and LAN scanning and cannot express "only
+api.anthropic.com" — which is the rule people actually want, and the reason
+credential masking is weaker than it reads: masking stops a token being
+destroyed, and does nothing to stop one being read and sent somewhere.
+
+```sh
+azkaban --net-host api.anthropic.com --net-host '*.githubusercontent.com' claude
+```
+
+```
+# ~/.config/azkaban/config — the every-run form
+net api.anthropic.com
+net *.githubusercontent.com
+```
+
+A CONNECT proxy runs in the outer process, `HTTPS_PROXY` points the jail at it,
+and **`--net-ports` is narrowed to the proxy's port**. That last part is what
+makes it a filter rather than a suggestion: a client that ignores the proxy
+variables gets `EPERM` from Landlock instead of a direct connection. It
+therefore requires the Landlock stage, and refuses to start without it rather
+than pretending to filter.
+
+Three choices are the difference between a filter and the appearance of one:
+
+- **No TLS interception.** The CONNECT target is checked and raw bytes are
+  relayed. Shipping a CA into the jail would buy L7 visibility at the cost of a
+  much larger security surface, and the threat model here is accidental
+  destruction rather than a determined attacker. (OpenShell and OpenSandbox both
+  do intercept; nono does not, for this reason.)
+- **DNS is resolved in the proxy, and the addresses are checked before the
+  dial.** An allowed hostname whose A record points at `169.254.169.254` is a
+  complete bypass otherwise — that address hands out instance credentials to
+  anything that asks. Loopback, link-local, private and non-unicast are all
+  refused with the reason.
+- **The dial goes to the resolved address, not to the name again.** Resolving
+  twice leaves a window that a short-TTL rebinding record is built to fit
+  through.
+
+The proxy listens on loopback, which every process on the host shares, so each
+run mints a 256-bit token and requires it in `Proxy-Authorization`. Without
+that, any other local process could use this jail's allowlist.
+
+Wildcards cover subdomains and **not** the bare domain: `*.example.com` allows
+`api.example.com` and not `example.com`. Conflating the two is how an allowlist
+quietly widens, and someone writing the first has not made the second decision.
+
+Plain HTTP through the proxy is refused rather than forwarded. Forwarding it
+would mean this process reading and relaying cleartext bodies on the jail's
+behalf — a much larger thing to get right than a tunnel, and everything worth
+allowing speaks TLS.
+
+`--dry-run` discloses the whole arrangement, with a placeholder port and no live
+token: it starts no listener, and the port is allocated at run time.
+
 ## Telling the tool it is in a jail
 
 Inside the jail a denial is indistinguishable from an ordinary filesystem error.
@@ -353,10 +410,12 @@ Two vectors are open by default:
   jail's own PID namespace. Against *accidents* it buys almost nothing anyway,
   since `rm -rf` is `unlinkat()` and blocking that breaks the tool. Where it would
   earn its keep is deliberate exploitation.
-- **No network egress filtering by host or domain.** `--net-ports` restricts
-  outbound TCP *ports* at the kernel, which closes localhost services and LAN
-  scanning, but it cannot express "only api.anthropic.com". `azkaban why --host`
-  says exactly that rather than implying a filter.
+- **Egress filtering by host is a guardrail, not a boundary.** `net <host>` and
+  `--net-host` put a CONNECT proxy in front of the jail's outbound TCP (see
+  below), which is genuinely useful against a confused tool. It does not close
+  UDP, so DNS remains a usable covert channel out of the jail, and a client
+  speaking raw TCP to the proxy port is bounded by the port number and nothing
+  else. Against a determined process inside the jail it buys little.
 - **Same uid, no capability drop.** `CapEff` is already empty for a normal user;
   the tool runs as you, which is exactly why "as your user" is the boundary the
   docker proxy has to defend.

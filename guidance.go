@@ -62,6 +62,7 @@ type jailPolicy struct {
 	Landlock   bool     `json:"landlock"`
 	NetIsolate bool     `json:"network_isolated"`
 	NetPorts   string   `json:"allowed_tcp_ports,omitempty"`
+	NetHosts   []string `json:"allowed_hosts,omitempty"`
 	EnvNames   []string `json:"env_forwarded"`
 }
 
@@ -124,6 +125,13 @@ is not reachable, **say so to the user** rather than trying another route to it.
 	}
 	if p.NetIsolate {
 		b.WriteString("**There is no network.** Nothing outbound will work.\n\n")
+	} else if len(p.NetHosts) > 0 {
+		b.WriteString("Outbound traffic goes through a filtering proxy (already in `HTTPS_PROXY`)\n" +
+			"and only these hosts are reachable:\n\n")
+		for _, h := range p.NetHosts {
+			b.WriteString("- `" + h + "`\n")
+		}
+		b.WriteString("\nAnything else fails. That is the allowlist, not the network being down.\n\n")
 	} else if p.NetPorts != "" {
 		b.WriteString("Outbound TCP is restricted to ports: `" + p.NetPorts + "`. Other ports are\n" +
 			"refused by the kernel, which looks like a connection failure.\n\n")

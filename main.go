@@ -291,6 +291,10 @@ func outer(argv []string) {
 	// Per-run equivalents of the config file's "ro"/"rw" lines, for a path this
 	// one run needs and every future run should not. Repeatable; same $HOME-relative
 	// resolution, same bindSafe rejection, same un-masking power as the file.
+	// Repeatable host allowlist for the egress proxy. Same file-and-flag pairing
+	// as ro/rw: `net <host>` in the config is the every-run form.
+	var fNetHost stringList
+	fs.Var(&fNetHost, "net-host", "")
 	var fRO, fRW, fPersistPath stringList
 	fs.Var(&fRO, "ro", "")
 	fs.Var(&fRW, "rw", "")
@@ -310,6 +314,7 @@ func outer(argv []string) {
 	keepEnv, dry, allowUserns, rawSock := *fKeepEnv, *fDry, *fAllowUserns, *fRawSock
 	noAudit, noGuidance := *fNoAudit, *fNoGuidance
 	memMax, netPorts := *fMemMax, *fNetPorts
+	var egressHosts []string
 	// No container socket is bound unless explicitly asked for. On-by-default
 	// meant every run exposed a full container API — the one interface the jail
 	// cannot police from the inside.
@@ -358,6 +363,7 @@ func outer(argv []string) {
 	uc.ro = append(uc.ro, fRO...)
 	uc.rw = append(uc.rw, fRW...)
 	uc.persist = append(uc.persist, fPersistPath...)
+	uc.net = append(uc.net, fNetHost...)
 
 	// --dry-run changes nothing, so there is nothing to record; recording it
 	// would fill the directory with runs that never happened.
@@ -786,6 +792,48 @@ func outer(argv []string) {
 	}
 	add("--setenv", "PS1", `(jail) \w \$ `)
 
+	// Egress filtering. This must come BEFORE the inner command is assembled:
+	// that is where netPorts is turned into AZKABAN_LL_PORTS, and narrowing it
+	// afterwards would be a no-op that looks like a working filter.
+	//
+	// Narrowing --net-ports to the proxy's port is what makes this a filter
+	// rather than a suggestion: a client that ignores HTTP_PROXY gets EPERM
+	// from Landlock instead of a direct connection.
+	if len(uc.net) > 0 {
+		if !landlockOn {
+			fatal(2, "net host filtering needs the landlock stage: without it nothing stops a client "+
+				"ignoring HTTP_PROXY and connecting directly, and the allowlist would be decoration")
+		}
+		if netIsolate {
+			fatal(2, "--no-net and a net host allowlist are contradictory: --no-net already denies everything")
+		}
+		// --dry-run is the documented audit trail, so it has to disclose this
+		// policy too — but with no listener and no live credential. The port is
+		// allocated at run time, so neither can be a real value here.
+		ep := &egressProxy{Addr: "127.0.0.1:<port>", Token: "<per-run token>"}
+		if !dry {
+			var err error
+			if ep, err = startEgressProxy(uc.net); err != nil {
+				fatal(1, "egress proxy: "+err.Error())
+			}
+		}
+		proxyURL := "http://azkaban:" + ep.Token + "@" + ep.Addr
+		for _, k := range []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"} {
+			add("--setenv", k, proxyURL)
+		}
+		// Loopback and the unix socket dir have to stay reachable or the child
+		// cannot talk to the proxy at all.
+		add("--setenv", "NO_PROXY", "localhost,127.0.0.1")
+		add("--setenv", "no_proxy", "localhost,127.0.0.1")
+		// This REPLACES any --net-ports the caller gave: the whole point is that
+		// the proxy port is the only way out.
+		netPorts = strconv.Itoa(ep.Port)
+		if dry {
+			netPorts = "<proxy port>"
+		}
+		egressHosts = uc.net
+	}
+
 	// Assemble the inner command.
 	var inner []string
 	if landlockOn {
@@ -825,6 +873,7 @@ func outer(argv []string) {
 			Landlock:   landlockOn,
 			NetIsolate: netIsolate,
 			NetPorts:   netPorts,
+			NetHosts:   egressHosts,
 			EnvNames:   envNames(slices.Concat(envKeep, uc.env)),
 		}
 		add("--ro-bind", tempWith("azkaban-policy-", jp.json()), guidancePolicyPath)
@@ -1309,7 +1358,7 @@ func bindSafe(home, p string) bool {
 // "mask" blanks a path out; naming a masked path with "ro"/"rw"/"persist"
 // un-masks it. "persist" also opts that one path out of the throwaway overlay.
 type userConf struct {
-	ro, rw, env, mask, persist []string
+	ro, rw, env, mask, persist, net []string
 	// auditOff records `audit off`. A bool rather than a list because it is a
 	// switch, and the default (record) has to survive a config that says
 	// nothing about it.
@@ -1351,6 +1400,8 @@ func parseUserBinds(data string) userConf {
 			c.mask = append(c.mask, val)
 		case "persist":
 			c.persist = append(c.persist, val)
+		case "net":
+			c.net = append(c.net, val)
 		case "audit":
 			// Only "off" turns it off. Anything else — including a typo — leaves
 			// the record on, which is the direction a mistake should fail in.
@@ -1433,6 +1484,14 @@ func usage() {
   --net-ports L  allow outbound TCP only to these ports (comma-separated), enforced
                  by landlock. Blocks localhost services and LAN scanning. UDP and
                  therefore DNS are unaffected. Needs the landlock stage.
+  --net-host H   allow outbound traffic only to this host, through a CONNECT
+                 proxy in the outer process. Repeatable; "*.example.com" covers
+                 subdomains but not the bare domain. TLS is NOT intercepted —
+                 the target is checked and raw bytes relayed. Sets HTTPS_PROXY
+                 in the jail and narrows --net-ports to the proxy, so a client
+                 that ignores the variable is refused by the kernel rather than
+                 connecting directly. Needs the landlock stage. For every run,
+                 use "net <host>" lines in the config.
   --keep-env     inherit the whole host environment (default: clear it and pass
                  only HOME/PATH/TERM/LANG/...; add more with "env NAME" in
                  ~/.config/azkaban/config)
@@ -1491,7 +1550,12 @@ func usage() {
 //      opt-in and its filtering proxy entirely. The fix is to stop binding the
 //      directory wholesale and allowlist only what display needs; until then,
 //      do not combine --display with a rootless container daemon.
-//   4. no net namespace: full host LAN + localhost service access.
+//   4. no net namespace: full host LAN + localhost service access. --net-ports
+//      narrows this to a port list at the kernel, and `net <host>` narrows it
+//      further to a host allowlist behind a CONNECT proxy — but neither closes
+//      UDP, so DNS remains a usable covert channel out of the jail, and a
+//      client speaking raw TCP to the proxy port is bounded by the port number
+//      and nothing else. Egress filtering here is a guardrail, not a boundary.
 //   5. TIOCSTI terminal injection: the jail always shares the controlling
 //      terminal, and azkaban offers no mitigation of its own — detaching the
 //      session closes the vector but costs job control on every run, including

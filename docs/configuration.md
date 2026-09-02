@@ -16,6 +16,7 @@ rw  /srv/shared-cache       # bind read-write (overlaid like the rest)
 persist .claude/.credentials.json   # writable AND not overlaid — survives exit
 env ANTHROPIC_API_KEY       # forward one host variable
 mask .config/mytool/token   # blank out a path azkaban does not know about
+net api.anthropic.com       # allow egress to one host (see design.md)
 audit off                   # stop recording runs (they are recorded by default)
 ```
 
