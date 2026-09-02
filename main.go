@@ -152,11 +152,36 @@ const selfInJail = "/tmp/.azkaban-self"
 // must never be able to write it.
 const azkabanCfgDir = ".config/azkaban"
 
+// bwrapBin - The bubblewrap binary, by absolute path: $PATH belongs to the
+// caller and this is the process that builds the sandbox.
+const bwrapBin = "/usr/bin/bwrap"
+
+// landlockExecFlag - argv[1] that selects the inner stage. main dispatches on
+// it and outer prepends it to the inner command; the two must agree or the
+// jail re-runs its own outer stage instead of applying Landlock.
+const landlockExecFlag = "--landlock-exec"
+
+// The AZKABAN_LL_* channel carries the Landlock allowlists from the outer
+// stage to the inner one across the bwrap boundary. Both stages have to spell
+// each name identically: splitEnv on an unset variable yields an EMPTY list,
+// which Landlock accepts as "grant nothing", so a typo on either side does not
+// fail — it silently produces a ruleset that denies the target everything, or,
+// for a name the inner stage never reads, one that was never narrowed at all.
+// Named once here so the two ends cannot drift apart.
+const (
+	llEnvPrefix  = "AZKABAN_LL_"
+	llEnvRO      = llEnvPrefix + "RO"
+	llEnvROFiles = llEnvPrefix + "ROFILES"
+	llEnvRW      = llEnvPrefix + "RW"
+	llEnvRWFiles = llEnvPrefix + "RWFILES"
+	llEnvPorts   = llEnvPrefix + "PORTS"
+)
+
 // main - Dispatches to one of the two roles. --landlock-exec means this
 // process is already inside bwrap and is the inner stage; anything else is the
 // outer stage that has yet to build the jail.
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "--landlock-exec" {
+	if len(os.Args) > 1 && os.Args[1] == landlockExecFlag {
 		landlockStage(os.Args[2:]) // runs inside bwrap
 		return
 	}
@@ -175,7 +200,7 @@ func main() {
 // for.
 func landlockStage(args []string) {
 	if len(args) < 2 || args[0] != "--" {
-		fatal(2, "usage: --landlock-exec -- <cmd> [args...]")
+		fatal(2, "usage: "+landlockExecFlag+" -- <cmd> [args...]")
 	}
 	cmd := args[1:]
 
@@ -186,8 +211,8 @@ func landlockStage(args []string) {
 	// subprocess in a pty breaks. (stdin/stdout keep working: fds inherited from
 	// before the sandbox are not re-checked, which is why this hides so well.)
 	rules := []landlock.Rule{
-		landlock.RODirs(splitEnv("AZKABAN_LL_RO")...).IgnoreIfMissing(),
-		landlock.ROFiles(splitEnv("AZKABAN_LL_ROFILES")...).IgnoreIfMissing(),
+		landlock.RODirs(splitEnv(llEnvRO)...).IgnoreIfMissing(),
+		landlock.ROFiles(splitEnv(llEnvROFiles)...).IgnoreIfMissing(),
 		// WithRefer is the same kind of trap: without it landlock denies every
 		// link/rename that CROSSES two directories, with EXDEV. That is how npm,
 		// pnpm and yarn populate their cache (link _cacache/tmp/x ->
@@ -195,8 +220,8 @@ func landlockStage(args []string) {
 		// while same-directory renames (go, pip) keep working. Refer is granted
 		// only on the writable set, and the kernel requires it on BOTH ends of the
 		// operation, so it cannot move anything out to a read-only path.
-		landlock.RWDirs(splitEnv("AZKABAN_LL_RW")...).WithIoctlDev().WithRefer().IgnoreIfMissing(),
-		landlock.RWFiles(splitEnv("AZKABAN_LL_RWFILES")...).WithIoctlDev().IgnoreIfMissing(),
+		landlock.RWDirs(splitEnv(llEnvRW)...).WithIoctlDev().WithRefer().IgnoreIfMissing(),
+		landlock.RWFiles(splitEnv(llEnvRWFiles)...).WithIoctlDev().IgnoreIfMissing(),
 	}
 
 	// Network egress. RestrictPaths deliberately drops network handling, so the
@@ -207,7 +232,7 @@ func landlockStage(args []string) {
 	// is a thing agents do constantly — and a sandbox people disable is worth
 	// nothing. With it, localhost services, LAN scanning and exfil to arbitrary
 	// ports are closed at the kernel, with no proxy in the path.
-	ports := splitEnv("AZKABAN_LL_PORTS")
+	ports := splitEnv(llEnvPorts)
 	for _, p := range ports {
 		n, err := strconv.ParseUint(p, 10, 16)
 		if err != nil {
@@ -234,7 +259,7 @@ func landlockStage(args []string) {
 	// allowlist, and it only advertises what the sandbox looks like.
 	var env []string
 	for _, kv := range os.Environ() {
-		if !strings.HasPrefix(kv, "AZKABAN_LL_") {
+		if !strings.HasPrefix(kv, llEnvPrefix) {
 			env = append(env, kv)
 		}
 	}
@@ -769,24 +794,24 @@ func outer(argv []string) {
 		}
 		self, _ = filepath.EvalSymlinks(self)
 		add("--ro-bind", self, selfInJail)
-		add("--setenv", "AZKABAN_LL_RO", llJoin("RO", llRO))
-		add("--setenv", "AZKABAN_LL_ROFILES", llJoin("ROFILES", llROFiles))
-		add("--setenv", "AZKABAN_LL_RW", llJoin("RW", llRW))
-		add("--setenv", "AZKABAN_LL_RWFILES", llJoin("RWFILES", llRWFiles))
+		add("--setenv", llEnvRO, llJoin("RO", llRO))
+		add("--setenv", llEnvROFiles, llJoin("ROFILES", llROFiles))
+		add("--setenv", llEnvRW, llJoin("RW", llRW))
+		add("--setenv", llEnvRWFiles, llJoin("RWFILES", llRWFiles))
 		// Entries are validated (and rejected) by the landlock stage; here we only
 		// normalise the comma-separated list into the newline-separated channel.
 		// FieldsFunc drops empties, so "443,,80" and " 443, 80 " need no cleanup.
 		if ps := strings.FieldsFunc(netPorts, func(r rune) bool {
 			return r == ',' || unicode.IsSpace(r)
 		}); len(ps) > 0 {
-			add("--setenv", "AZKABAN_LL_PORTS", strings.Join(ps, "\n"))
+			add("--setenv", llEnvPorts, strings.Join(ps, "\n"))
 		}
-		inner = append([]string{selfInJail, "--landlock-exec", "--"}, cmd...)
+		inner = append([]string{selfInJail, landlockExecFlag, "--"}, cmd...)
 	} else {
 		inner = cmd
 	}
 
-	full := append(append([]string{"/usr/bin/bwrap"}, a...), "--")
+	full := append(append([]string{bwrapBin}, a...), "--")
 	full = append(full, inner...)
 
 	if dry {
@@ -1045,7 +1070,7 @@ func llJoin(what string, paths []string) string {
 // overlayfs (Linux >= 5.11); if the kernel refuses, bwrap fails with a clear
 // error and --persist is the way out.
 var bwrapHelp = sync.OnceValue(func() string {
-	out, _ := exec.Command("/usr/bin/bwrap", "--help").CombinedOutput()
+	out, _ := exec.Command(bwrapBin, "--help").CombinedOutput()
 	return string(out)
 })
 
