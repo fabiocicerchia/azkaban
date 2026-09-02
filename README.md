@@ -184,12 +184,30 @@ azkaban [flags] [--] <command> [args...]
   --display      pass through X11/wayland/XAUTHORITY + the wayland/pulse sockets
                  from /run/user (OFF by default; ssh-agent, gpg-agent, dbus and
                  any rootless container socket in there stay hidden)
-  --ssh-agent    forward $SSH_AUTH_SOCK (+ known_hosts read-only) so git push
-                 over ssh works. The keys stay on the host — the jail gets a
-                 signing oracle, not the key — but that oracle authenticates as
-                 you to every host they open, for as long as the jail runs.
-                 "ssh-add -c" makes each signature prompt on the host. OFF by
-                 default; ~/.ssh itself is never bound.
+  --ssh-agent    forward the agent (+ known_hosts read-only) so git push over ssh
+                 works. The jail talks to a FILTERING PROXY in the outer process
+                 that forwards only "list keys" and "sign this" and refuses add,
+                 remove, lock and extensions — so a tool inside can no longer
+                 delete the keys you loaded or lock your host agent. The keys
+                 stay on the host either way; the jail gets a signing oracle,
+                 and that oracle still authenticates as you to every host they
+                 open. OFF by default; ~/.ssh itself is never bound.
+  --ssh-agent-confirm
+                 ...and ask on the terminal before every signature. This is
+                 "ssh-add -c" for a jail that cannot reach the host's prompt.
+  --ssh-agent-raw
+                 ...bind the REAL agent socket with no filter, the pre-proxy
+                 behaviour. Anything in the jail can then add, remove or lock
+                 your keys as well as sign with them.
+  --unix-socket PATH
+                 bind ONE unix socket, and nothing around it. For "this tool may
+                 reach Postgres at /tmp/.s.PGSQL.5432" without granting /tmp.
+                 Repeatable; connect and bind are not distinguished. For every
+                 run, use "unix-socket" lines in the config.
+  --unix-socket-dir DIR
+                 same, for a directory whose socket names are generated at
+                 runtime (PID-suffixed paths). Wider by exactly one directory,
+                 which is why both exist. Repeatable.
   --allow-userns permit nested user namespaces (needed by Chrome/Electron tools)
   --no-net       isolate the network in a new namespace (breaks internet access)
   --net-ports L  allow outbound TCP only to these ports (comma-separated), enforced

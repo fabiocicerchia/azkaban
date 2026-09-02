@@ -129,14 +129,61 @@ you would rather a hostile tool could not read (or delete) past sessions.
 azkaban --ssh-agent claude
 ```
 
-It binds `$SSH_AUTH_SOCK` and `known_hosts` (read-only) and nothing else. The
-private keys never enter the jail — what crosses is a *signing oracle*, so an
-exfiltrated jail keeps nothing after it exits. While it runs, though, anything
-inside can authenticate as you to every host those keys open. `ssh-add -c` on
-the host reduces that to one confirmation prompt per signature.
+The private keys never enter the jail — what crosses is a *signing oracle*, so
+an exfiltrated jail keeps nothing after it exits.
+
+What crosses is also **not the real agent socket**. The jail is pointed at a
+filtering proxy in the outer process, which speaks the agent protocol and
+forwards exactly two requests:
+
+| message | | |
+| --- | --- | --- |
+| `SSH_AGENTC_REQUEST_IDENTITIES` | 11 | list the public keys — **forwarded** |
+| `SSH_AGENTC_SIGN_REQUEST` | 13 | sign this blob — **forwarded** |
+| `ADD_IDENTITY`, `REMOVE_IDENTITY`, `REMOVE_ALL_IDENTITIES`, `LOCK`, `UNLOCK`, extensions | 17-27 | **refused** |
+
+The refusals are the part that changed. With the socket bound raw, one
+`ssh-add -D` inside the jail removes every key you have loaded, and one
+`ssh-add -x` locks the agent your host shell is using. Neither is anything a
+build needs. The allowlist is by message type, so a message added to the
+protocol after this was written is refused rather than relayed.
+
+`--ssh-agent-confirm` adds a prompt on `/dev/tty` before every signature — the
+in-jail equivalent of `ssh-add -c`, which the host-side flag could not provide
+for a process inside the jail. `--ssh-agent-raw` restores the old unfiltered
+behaviour if you need it.
+
+What is left after all of that is the signature itself, which is the whole
+point of the flag: while the jail runs, anything inside can ask for one, and a
+signature authenticates as you to every host those keys open. The proxy narrows
+the grant; it does not remove it.
 
 Do not reach for `ro .ssh` instead. It is the same capability plus permanent
 key theft, and `--display` is the same oracle plus X11 and dbus.
+
+## Reaching one unix socket
+
+A unix socket used to be reachable only if its path happened to fall inside a
+bind, so "let this tool talk to Postgres" meant `--rw /tmp` and everything in
+it. `--unix-socket` grants the socket and nothing else:
+
+```bash
+azkaban --unix-socket /tmp/.s.PGSQL.5432 -- psql -h /tmp mydb
+azkaban --unix-socket-dir "$XDG_RUNTIME_DIR/myapp" -- ./run   # names generated at runtime
+```
+
+Both have `unix-socket` / `unix-socket-dir` lines in the config for the
+every-run form. The directory variant exists because tools generate socket
+names from a PID or a uid, so the name to grant is not knowable when the run
+starts; it is wider than the file form by exactly the contents of one
+directory, which is why both exist.
+
+This matters most under `--no-net`, where local IPC is the only channel left.
+
+**Connect and bind are not distinguished.** Landlock has no socket-path right,
+so the kernel cannot tell them apart here: a grant lets the jail *bind* a name
+as well as *connect* to one. If a daemon of yours treats an unexpected socket
+appearing at a path as a takeover, this flag does not stop that.
 
 `gh` is a separate problem: if `gh auth status` says `(keyring)`, the token
 lives behind the D-Bus secret service, which the jail does not bind — so `gh`

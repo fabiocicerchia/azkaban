@@ -308,6 +308,16 @@ func outer(argv []string) {
 	fNetPorts := fs.String("net-ports", "", "")
 	fDisplay := fs.Bool("display", false, "")
 	fSSHAgent := fs.Bool("ssh-agent", false, "")
+	// The agent grant, narrowed. By default --ssh-agent now goes through a
+	// filtering proxy that forwards only "list keys" and "sign this"; these two
+	// widen it back or narrow it further. See sshagentproxy.go.
+	fSSHAgentRaw := fs.Bool("ssh-agent-raw", false, "")
+	fSSHAgentConfirm := fs.Bool("ssh-agent-confirm", false, "")
+	// One unix socket, bound as a file. The alternative was `--rw /tmp`, which
+	// grants the socket and everything around it. Repeatable.
+	var fUnixSocket, fUnixSocketDir stringList
+	fs.Var(&fUnixSocket, "unix-socket", "")
+	fs.Var(&fUnixSocketDir, "unix-socket-dir", "")
 	fNoNet := fs.Bool("no-net", false, "")
 	fNoLandlock := fs.Bool("no-landlock", false, "")
 	fKeepEnv := fs.Bool("keep-env", false, "")
@@ -357,6 +367,16 @@ func outer(argv []string) {
 	keepEnv, dry, allowUserns, rawSock := *fKeepEnv, *fDry, *fAllowUserns, *fRawSock
 	noAudit, noGuidance, rollbackOn := *fNoAudit, *fNoGuidance, *fRollback
 	elevate := *fElevate
+	sshAgentRaw, sshAgentConfirm := *fSSHAgentRaw, *fSSHAgentConfirm
+	var agentProxy *sshAgentProxy
+	if (sshAgentRaw || sshAgentConfirm) && !sshAgent {
+		fatal(2, "--ssh-agent-raw/--ssh-agent-confirm say HOW to forward the agent; pair with --ssh-agent")
+	}
+	if sshAgentRaw && sshAgentConfirm {
+		// The raw socket is the real agent: there is nothing in the path that
+		// could stop to ask. Refused rather than silently ignoring one of them.
+		fatal(2, "--ssh-agent-raw binds the real agent socket; nothing is left to confirm with")
+	}
 	if elevate && !landlockOn {
 		// Without the floor underneath it, the supervisor is the only thing
 		// deciding, and a supervisor that has to be right every time is exactly
@@ -774,6 +794,29 @@ func outer(argv []string) {
 		case !exists(sock):
 			fatal(1, "--ssh-agent: no socket at "+sock)
 		}
+		// Default since the filtering proxy exists: the jail talks to a proxy in
+		// the outer process, which forwards only "list keys" and "sign this" and
+		// refuses add/remove/lock. --ssh-agent-raw is the old behaviour, where
+		// the real socket is bound and anything inside can also DELETE the keys
+		// you loaded or lock your host agent. See sshagentproxy.go.
+		if !sshAgentRaw && !dry {
+			// /tmp, like the args file and every other outer-stage temp: the
+			// XDG runtime dir is tmpfs'd inside the jail and is where --display
+			// already has too much living.
+			proxyDir, err := os.MkdirTemp("/tmp", "azkaban-ssh-")
+			if err != nil {
+				fatal(1, "--ssh-agent: "+err.Error())
+			}
+			tempTrack(proxyDir)
+			ap, err := newSSHAgentProxy(sock, proxyDir, sshAgentConfirm)
+			if err != nil {
+				fatal(1, "--ssh-agent: "+err.Error())
+			}
+			agentProxy = ap
+			tempTrack(ap.path)
+			go ap.serve()
+			sock = ap.path
+		}
 		add("--bind", sock, sock)
 		add("--setenv", "SSH_AUTH_SOCK", sock)
 		llRWFiles = append(llRWFiles, sock)
@@ -785,6 +828,47 @@ func outer(argv []string) {
 			add("--ro-bind", kh, kh)
 			llROFiles = append(llROFiles, kh)
 		}
+	}
+
+	// AF_UNIX grants. A unix socket was previously reachable only if its path
+	// happened to fall inside a bind, so "let this tool reach Postgres at
+	// /tmp/.s.PGSQL.5432" meant granting /tmp and everything in it. This binds
+	// the socket and nothing else. Sharpest under --no-net, where local IPC is
+	// the only channel left.
+	//
+	// LIMIT, stated rather than implied: connect and bind are NOT distinguished.
+	// Landlock has no socket-path right, so the kernel cannot tell them apart
+	// here; a grant lets the jail bind a name as well as connect to one. Doing
+	// better means a seccomp filter on bind(2), which elevate.go now makes
+	// possible and nobody has asked for.
+	for _, s := range slices.Concat(fUnixSocket, uc.unixSocket) {
+		p := resolve(home, s)
+		if !bindSafe(home, p) {
+			fatal(2, "--unix-socket: refusing "+p)
+		}
+		if !exists(p) {
+			// A socket that is not there yet is almost always a daemon that is
+			// not running, and binding a missing path would create a directory
+			// the jail then finds empty and confusing.
+			fatal(1, "--unix-socket: no socket at "+p)
+		}
+		add("--bind", p, p)
+		llRWFiles = append(llRWFiles, p)
+	}
+	// The directory form exists because tools generate socket names at runtime
+	// — PID-suffixed paths, $TMPDIR/tsx-$UID/.pipe — so the name to grant is not
+	// knowable when the run starts. Wider than the file form by exactly the
+	// contents of one directory, which is why both exist.
+	for _, s := range slices.Concat(fUnixSocketDir, uc.unixSocketDir) {
+		p := resolve(home, s)
+		if !bindSafe(home, p) {
+			fatal(2, "--unix-socket-dir: refusing "+p)
+		}
+		if !isDir(p) {
+			fatal(1, "--unix-socket-dir: not a directory: "+p)
+		}
+		add("--bind", p, p)
+		llRW = append(llRW, p)
 	}
 
 	// Project working dir: writable, and made the cwd.
@@ -1050,22 +1134,24 @@ func outer(argv []string) {
 		},
 	})
 	auditLog.event("mode", map[string]any{
-		"overlay":       overlay,
-		"persist":       *fPersist,
-		"landlock":      landlockOn,
-		"rlimits":       rlimits,
-		"allow_userns":  allowUserns,
-		"keep_env":      keepEnv,
-		"no_net":        netIsolate,
-		"net_ports":     netPorts,
-		"display":       display,
-		"ssh_agent":     sshAgent,
-		"gpu":           gpu,
-		"elevate":       elevate,
-		"mem_max":       memMax,
-		"socket":        socketKind,
-		"socket_raw":    rawSock,
-		"bwrap_command": shquote(full),
+		"overlay":           overlay,
+		"persist":           *fPersist,
+		"landlock":          landlockOn,
+		"rlimits":           rlimits,
+		"allow_userns":      allowUserns,
+		"keep_env":          keepEnv,
+		"no_net":            netIsolate,
+		"net_ports":         netPorts,
+		"display":           display,
+		"ssh_agent":         sshAgent,
+		"ssh_agent_raw":     sshAgentRaw,
+		"ssh_agent_confirm": sshAgentConfirm,
+		"gpu":               gpu,
+		"elevate":           elevate,
+		"mem_max":           memMax,
+		"socket":            socketKind,
+		"socket_raw":        rawSock,
+		"bwrap_command":     shquote(full),
 	})
 
 	if dry {
@@ -1151,6 +1237,10 @@ func outer(argv []string) {
 		}
 	}
 	runErr := c.Wait()
+	if agentProxy != nil {
+		agentProxy.close()
+		auditLog.event("ssh_agent", agentProxy.stats())
+	}
 	if supervisor != nil {
 		// Closed only now: the kernel turns every trapped syscall into ENOSYS
 		// once the last listener is gone, so an early close would break the jail
@@ -1586,6 +1676,8 @@ func bindSafe(home, p string) bool {
 // un-masks it. "persist" also opts that one path out of the throwaway overlay.
 type userConf struct {
 	ro, rw, env, mask, persist, net, credential []string
+	// AF_UNIX grants, the every-run form of --unix-socket/--unix-socket-dir.
+	unixSocket, unixSocketDir []string
 	// auditOff records `audit off`. A bool rather than a list because it is a
 	// switch, and the default (record) has to survive a config that says
 	// nothing about it.
@@ -1631,6 +1723,10 @@ func parseUserBinds(data string) userConf {
 			c.net = append(c.net, val)
 		case "credential":
 			c.credential = append(c.credential, val)
+		case "unix-socket":
+			c.unixSocket = append(c.unixSocket, val)
+		case "unix-socket-dir":
+			c.unixSocketDir = append(c.unixSocketDir, val)
 		case "audit":
 			// Only "off" turns it off. Anything else — including a typo — leaves
 			// the record on, which is the direction a mistake should fail in.
@@ -1702,12 +1798,30 @@ func usage() {
   --display      pass through X11/wayland/XAUTHORITY + the wayland/pulse sockets
                  from /run/user (OFF by default; ssh-agent, gpg-agent, dbus and
                  any rootless container socket in there stay hidden)
-  --ssh-agent    forward $SSH_AUTH_SOCK (+ known_hosts read-only) so git push
-                 over ssh works. The keys stay on the host — the jail gets a
-                 signing oracle, not the key — but that oracle authenticates as
-                 you to every host they open, for as long as the jail runs.
-                 "ssh-add -c" makes each signature prompt on the host. OFF by
-                 default; ~/.ssh itself is never bound.
+  --ssh-agent    forward the agent (+ known_hosts read-only) so git push over ssh
+                 works. The jail talks to a FILTERING PROXY in the outer process
+                 that forwards only "list keys" and "sign this" and refuses add,
+                 remove, lock and extensions — so a tool inside can no longer
+                 delete the keys you loaded or lock your host agent. The keys
+                 stay on the host either way; the jail gets a signing oracle,
+                 and that oracle still authenticates as you to every host they
+                 open. OFF by default; ~/.ssh itself is never bound.
+  --ssh-agent-confirm
+                 ...and ask on the terminal before every signature. This is
+                 "ssh-add -c" for a jail that cannot reach the host's prompt.
+  --ssh-agent-raw
+                 ...bind the REAL agent socket with no filter, the pre-proxy
+                 behaviour. Anything in the jail can then add, remove or lock
+                 your keys as well as sign with them.
+  --unix-socket PATH
+                 bind ONE unix socket, and nothing around it. For "this tool may
+                 reach Postgres at /tmp/.s.PGSQL.5432" without granting /tmp.
+                 Repeatable; connect and bind are not distinguished. For every
+                 run, use "unix-socket" lines in the config.
+  --unix-socket-dir DIR
+                 same, for a directory whose socket names are generated at
+                 runtime (PID-suffixed paths). Wider by exactly one directory,
+                 which is why both exist. Repeatable.
   --allow-userns permit nested user namespaces (needed by Chrome/Electron tools)
   --no-net       isolate the network in a new namespace (breaks internet access)
   --net-ports L  allow outbound TCP only to these ports (comma-separated), enforced
@@ -1829,8 +1943,13 @@ func usage() {
 //      they are authorized, for the life of the jail. It is strictly narrower
 //      than the alternative it exists to prevent (`ro ~/.ssh`, which hands over
 //      the key itself, permanently) and than --display, which grants the same
-//      oracle plus X11 and dbus. `ssh-add -c` on the host reduces it to one
-//      confirmation prompt per signature; there is no in-jail equivalent.
+//      oracle plus X11 and dbus. NARROWED since: the jail now reaches a
+//      filtering proxy (sshagentproxy.go) that forwards only "list keys" and
+//      "sign this", so add/remove/lock are gone and --ssh-agent-confirm is the
+//      in-jail equivalent of `ssh-add -c` this entry used to say did not exist.
+//      What remains is the signature itself, which is the whole point of the
+//      flag and cannot be filtered away. --ssh-agent-raw restores the old,
+//      unfiltered socket.
 //  11. --elevate lets a human hand the jail a read-only descriptor for a path
 //      outside the allowlist, one path at a time and only while a terminal is
 //      there to answer. It is bounded by your own filesystem permissions and
@@ -1840,4 +1959,9 @@ func usage() {
 //      rate limit exists because a tool that asks a thousand times is trying
 //      to be approved by fatigue. Writes are never elevated, so nothing here
 //      reaches vectors 2, 7 or 9.
+//  12. --unix-socket/--unix-socket-dir bind a named socket into the jail, which
+//      is whatever the daemon on the other end lets your user do. It replaces
+//      the wider grant people reached for instead (`--rw /tmp`), and connect
+//      and bind are NOT distinguished — Landlock has no socket-path right, so
+//      a grant lets the jail bind a name as well as connect to one.
 // --------------------------------------------------------------------------- //
