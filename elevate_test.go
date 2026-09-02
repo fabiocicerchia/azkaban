@@ -185,7 +185,7 @@ func TestWithoutATerminalEveryRequestIsDenied(t *testing.T) {
 
 // ---- The decision cache ----
 
-func TestOnePathIsOnlyEverAskedAbountOnce(t *testing.T) {
+func TestOnePathIsOnlyEverAskedAboutOnce(t *testing.T) {
 	ap := &fixedApprover{say: false}
 	e := newElevator(-1, nil, ap)
 	for range 50 {
