@@ -261,19 +261,21 @@ func containerReason(body []byte, rootReal string) string {
 			return "--security-opt " + so + " is not allowed"
 		}
 	}
-	if escapesNamespace(h.PidMode) {
-		return "--pid=" + h.PidMode + " is not allowed"
-	}
-	if escapesNamespace(h.IpcMode) {
-		return "--ipc=" + h.IpcMode + " is not allowed"
-	}
-	if escapesNamespace(h.UsernsMode) {
-		return "--userns=" + h.UsernsMode + " is not allowed"
-	}
-	// --net=host puts the container on the host stack, which defeats --no-net and
-	// makes the otherwise-harmless NET_ADMIN cap a host firewall/sniffing primitive.
-	if escapesNamespace(h.NetworkMode) {
-		return "--network=" + h.NetworkMode + " is not allowed"
+	// Every namespace the container can be made to SHARE with the host or with
+	// another container is an escape from the jail's own unshare. Checked as one
+	// table so a namespace added to HostConfig cannot be given a check that
+	// differs from its four siblings. --net=host is the sharpest of them: it puts
+	// the container on the host stack, which defeats --no-net and makes the
+	// otherwise-harmless NET_ADMIN cap a host firewall/sniffing primitive.
+	for _, ns := range []struct{ flag, mode string }{
+		{"pid", h.PidMode},
+		{"ipc", h.IpcMode},
+		{"userns", h.UsernsMode},
+		{"network", h.NetworkMode},
+	} {
+		if escapesNamespace(ns.mode) {
+			return "--" + ns.flag + "=" + ns.mode + " is not allowed"
+		}
 	}
 	for _, bind := range h.Binds {
 		if reason := bindReason(bind, rootReal); reason != "" {
