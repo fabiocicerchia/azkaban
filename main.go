@@ -272,6 +272,16 @@ func landlockStage(args []string) {
 // Outer role: parse flags, build the bwrap invocation, run it.
 // --------------------------------------------------------------------------- //
 
+// bwrapArgs - The bwrap option list under construction. Order is load-bearing:
+// bwrap applies its arguments in sequence, so a bind added later wins over one
+// added earlier, and roFreeze/maskPaths depend on exactly that. Appending is
+// the only operation, which is what keeps that sequence readable as one pass
+// down outer() and verbatim in --dry-run's output.
+type bwrapArgs []string
+
+// add - Appends one option and its operands to the invocation.
+func (b *bwrapArgs) add(xs ...string) { *b = append(*b, xs...) }
+
 // outer - Parses the flags, builds the bwrap invocation from the allowlists at
 // the top of this file, and runs it. Everything the jail will be is decided
 // here; --dry-run prints the result instead of executing it, which is what
@@ -390,29 +400,28 @@ func outer(argv []string) {
 	}
 	var llROFiles []string
 
-	var a []string
-	add := func(xs ...string) { a = append(a, xs...) }
+	var a bwrapArgs
 
 	// Environment: drop the host env, then re-add the allowlist. MUST come before
 	// every --setenv below — bwrap applies args in order and --clearenv wipes
 	// whatever preceded it.
 	if !keepEnv {
-		add("--clearenv")
+		a.add("--clearenv")
 		for _, k := range slices.Concat(envKeep, uc.env) {
 			if v, ok := os.LookupEnv(k); ok {
-				add("--setenv", k, v)
+				a.add("--setenv", k, v)
 			}
 		}
 	}
 
 	// Base read-only root.
-	add("--ro-bind", "/usr", "/usr")
-	add("--symlink", "usr/bin", "/bin")
-	add("--symlink", "usr/lib", "/lib")
-	add("--symlink", "usr/lib64", "/lib64")
-	add("--symlink", "usr/sbin", "/sbin")
-	add("--ro-bind", "/etc", "/etc")
-	add("--ro-bind", hostsFile, "/etc/hosts")
+	a.add("--ro-bind", "/usr", "/usr")
+	a.add("--symlink", "usr/bin", "/bin")
+	a.add("--symlink", "usr/lib", "/lib")
+	a.add("--symlink", "usr/lib64", "/lib64")
+	a.add("--symlink", "usr/sbin", "/sbin")
+	a.add("--ro-bind", "/etc", "/etc")
+	a.add("--ro-bind", hostsFile, "/etc/hosts")
 
 	// ssh fatals ("Bad owner or permissions") on any Include'd config file whose
 	// owner is neither root nor the caller. bwrap maps ONE uid, so every
@@ -428,20 +437,20 @@ func outer(argv []string) {
 			p = t
 		}
 		if data, err := os.ReadFile(p); err == nil {
-			add("--ro-bind", tempWith("azkaban-sshconf-", string(data)), p)
+			a.add("--ro-bind", tempWith("azkaban-sshconf-", string(data)), p)
 		}
 	}
 
 	if exists("/opt") {
-		add("--ro-bind", "/opt", "/opt")
+		a.add("--ro-bind", "/opt", "/opt")
 	}
-	add("--ro-bind", "/sys", "/sys")
+	a.add("--ro-bind", "/sys", "/sys")
 
 	// Kernel interfaces.
-	add("--dev", "/dev")
-	add("--proc", "/proc")
-	add("--tmpfs", "/tmp")
-	add("--tmpfs", "/run")
+	a.add("--dev", "/dev")
+	a.add("--proc", "/proc")
+	a.add("--tmpfs", "/tmp")
+	a.add("--tmpfs", "/run")
 
 	// resolv.conf is usually a symlink into /run (tmpfs'd above, now empty), so
 	// bind our copy at the symlink's real target AFTER the tmpfs — otherwise the
@@ -452,19 +461,19 @@ func outer(argv []string) {
 			resolvTarget = t
 		}
 	}
-	add("--ro-bind", resolvFile, resolvTarget)
+	a.add("--ro-bind", resolvFile, resolvTarget)
 
 	// /proc entries that describe the host kernel. Addresses are usually zeroed by
 	// kptr_restrict, but the symbol and module lists still fingerprint the exact
 	// kernel build, which is the first step in picking an exploit.
 	for _, p := range procMask {
-		add("--ro-bind", maskFileOnce(&maskFile), "/proc/"+p)
+		a.add("--ro-bind", maskFileOnce(&maskFile), "/proc/"+p)
 	}
 
 	// Mask sensitive /sys subtrees.
 	for _, s := range sysMask {
 		if exists("/sys/" + s) {
-			add("--tmpfs", "/sys/"+s)
+			a.add("--tmpfs", "/sys/"+s)
 		}
 	}
 
@@ -477,7 +486,7 @@ func outer(argv []string) {
 			if !exists(d) {
 				continue
 			}
-			add("--dev-bind", d, d)
+			a.add("--dev-bind", d, d)
 			if isDir(d) {
 				llRW = append(llRW, d)
 			} else {
@@ -530,39 +539,39 @@ func outer(argv []string) {
 			// socket is what gets bound.
 			fmt.Fprintln(os.Stderr, "azkaban: note: --dry-run prints the RAW socket as the bind source; a real run substitutes the filtering proxy socket there.")
 		}
-		add("--bind", sockForJail, realSock)
-		add("--setenv", "DOCKER_HOST", "unix://"+realSock)
+		a.add("--bind", sockForJail, realSock)
+		a.add("--setenv", "DOCKER_HOST", "unix://"+realSock)
 		if socketKind == "podman" {
-			add("--setenv", "CONTAINER_HOST", "unix://"+realSock)
+			a.add("--setenv", "CONTAINER_HOST", "unix://"+realSock)
 		}
 		llRWFiles = append(llRWFiles, realSock)
 	}
 
 	// Shared memory (needed by chromium/electron based tools).
 	if exists("/dev/shm") {
-		add("--dev-bind", "/dev/shm", "/dev/shm")
+		a.add("--dev-bind", "/dev/shm", "/dev/shm")
 	}
 
 	// Display passthrough: X11 + wayland + auth + the whole XDG runtime dir.
 	// That dir also holds ssh-agent/gpg-agent/dbus sockets — see vector 3.
 	if display {
 		if exists("/tmp/.X11-unix") {
-			add("--bind", "/tmp/.X11-unix", "/tmp/.X11-unix")
+			a.add("--bind", "/tmp/.X11-unix", "/tmp/.X11-unix")
 		}
 		if xa := os.Getenv("XAUTHORITY"); xa != "" && exists(xa) {
-			add("--ro-bind", xa, xa)
+			a.add("--ro-bind", xa, xa)
 		}
 		// Bind ONLY the display sockets, never the directory. $XDG_RUNTIME_DIR also
 		// holds ssh-agent, gpg-agent, dbus — and a ROOTLESS docker/podman socket,
 		// so binding it wholesale handed over the container socket raw and bypassed
 		// the --bind-docker opt-in entirely.
 		if exists(runtimeDir) {
-			add("--tmpfs", runtimeDir)
+			a.add("--tmpfs", runtimeDir)
 			llRW = append(llRW, runtimeDir)
 			for _, pat := range displaySockets {
 				ms, _ := filepath.Glob(filepath.Join(runtimeDir, pat))
 				for _, m := range ms {
-					add("--bind", m, m)
+					a.add("--bind", m, m)
 				}
 			}
 		}
@@ -571,13 +580,13 @@ func outer(argv []string) {
 	// Home: empty tmpfs, then bind back ONLY an allowlist. Everything else under
 	// $HOME (~/.ssh, ~/.aws, ~/.gnupg, sibling projects, ...) stays hidden.
 	// Extra paths come from the TRUSTED per-user config, never from the cwd.
-	add("--tmpfs", home)
+	a.add("--tmpfs", home)
 	for _, rel := range slices.Concat(roPaths, uc.ro) {
 		p := resolve(home, rel)
 		if !exists(p) {
 			continue
 		}
-		add("--ro-bind", p, p)
+		a.add("--ro-bind", p, p)
 		if isDir(p) {
 			llRO = append(llRO, p)
 		} else {
@@ -607,10 +616,10 @@ func outer(argv []string) {
 		}
 		switch {
 		case isDir(p) && overlay:
-			add("--overlay-src", p, "--tmp-overlay", p)
+			a.add("--overlay-src", p, "--tmp-overlay", p)
 			llRW = append(llRW, p)
 		case isDir(p):
-			add("--bind", p, p)
+			a.add("--bind", p, p)
 			llRW = append(llRW, p)
 		case overlay:
 			// overlayfs needs a directory; for a single file the equivalent is a
@@ -619,10 +628,10 @@ func outer(argv []string) {
 			if err != nil {
 				fatal(1, "copying "+p+" for overlay: "+err.Error())
 			}
-			add("--bind", cp, p)
+			a.add("--bind", cp, p)
 			llRWFiles = append(llRWFiles, p)
 		default:
-			add("--bind", p, p)
+			a.add("--bind", p, p)
 			llRWFiles = append(llRWFiles, p)
 		}
 	}
@@ -649,7 +658,7 @@ func outer(argv []string) {
 				"A bind needs an existing source — create it outside the jail first.")
 			continue
 		}
-		add("--bind", p, p)
+		a.add("--bind", p, p)
 		if isDir(p) {
 			llRW = append(llRW, p)
 		} else {
@@ -673,7 +682,7 @@ func outer(argv []string) {
 		if !exists(p) {
 			continue
 		}
-		add("--ro-bind", p, p)
+		a.add("--ro-bind", p, p)
 		llRO = append(llRO, p)
 	}
 
@@ -686,10 +695,10 @@ func outer(argv []string) {
 			continue
 		}
 		if isDir(p) {
-			add("--tmpfs", p)
+			a.add("--tmpfs", p)
 			continue
 		}
-		add("--ro-bind", maskFileOnce(&maskFile), p)
+		a.add("--ro-bind", maskFileOnce(&maskFile), p)
 	}
 
 	// ssh-agent passthrough. The private keys stay on the host: what crosses the
@@ -707,22 +716,22 @@ func outer(argv []string) {
 		case !exists(sock):
 			fatal(1, "--ssh-agent: no socket at "+sock)
 		}
-		add("--bind", sock, sock)
-		add("--setenv", "SSH_AUTH_SOCK", sock)
+		a.add("--bind", sock, sock)
+		a.add("--setenv", "SSH_AUTH_SOCK", sock)
 		llRWFiles = append(llRWFiles, sock)
 
 		// Without known_hosts every push dies on "Host key verification failed",
 		// which makes the flag look broken. This file holds no secret — only the
 		// list of hosts you have reached, which is the small leak the flag costs.
 		if kh := filepath.Join(home, ".ssh", "known_hosts"); exists(kh) {
-			add("--ro-bind", kh, kh)
+			a.add("--ro-bind", kh, kh)
 			llROFiles = append(llROFiles, kh)
 		}
 	}
 
 	// Project working dir: writable, and made the cwd.
-	add("--bind", cwd, cwd)
-	add("--chdir", cwd)
+	a.add("--bind", cwd, cwd)
+	a.add("--chdir", cwd)
 
 	// Target binary: expose ONLY the resolved executable, never its $PATH dir.
 	// $HOME is tmpfs'd, so a binary reached via ~/.local/bin (or a symlink into
@@ -731,7 +740,7 @@ func outer(argv []string) {
 	// needed. Bound last so it overlays the home tmpfs.
 	if binPath, err := exec.LookPath(cmd[0]); err == nil {
 		binPath, _ = filepath.EvalSymlinks(binPath)
-		add("--ro-bind", binPath, binPath)
+		a.add("--ro-bind", binPath, binPath)
 		llROFiles = append(llROFiles, binPath)
 		cmd[0] = binPath
 	} else {
@@ -739,11 +748,11 @@ func outer(argv []string) {
 	}
 
 	// Isolation.
-	add("--die-with-parent")
-	add("--unshare-pid")
-	add("--unshare-uts")
-	add("--unshare-ipc")
-	add("--unshare-cgroup-try")
+	a.add("--die-with-parent")
+	a.add("--unshare-pid")
+	a.add("--unshare-uts")
+	a.add("--unshare-ipc")
+	a.add("--unshare-cgroup-try")
 	// A nested user namespace hands the jailed process a fresh capability set,
 	// which is the usual first step of a kernel-exploit chain. Blocking it makes
 	// that azkaban's guarantee rather than a property of the host's sysctl.
@@ -753,14 +762,14 @@ func outer(argv []string) {
 			// bwrap refuses --disable-userns without an explicit --unshare-user.
 			// It already creates a userns implicitly when unprivileged, so this
 			// states what was happening anyway; the uid still maps through to you.
-			add("--unshare-user")
-			add("--disable-userns")
+			a.add("--unshare-user")
+			a.add("--disable-userns")
 		} else {
 			fmt.Fprintln(os.Stderr, "azkaban: note: this bwrap has no --disable-userns; nested user namespaces stay available.")
 		}
 	}
 	if netIsolate {
-		add("--unshare-net")
+		a.add("--unshare-net")
 	}
 	// The jail keeps our controlling terminal, so on a kernel that still permits
 	// it the jail can ioctl(TIOCSTI) characters into that terminal for the host
@@ -770,20 +779,20 @@ func outer(argv []string) {
 	if !dry {
 		warnTIOCSTI()
 	}
-	add("--hostname", jailHostname)
+	a.add("--hostname", jailHostname)
 
 	// Environment.
 	if display {
-		add("--setenv", "DISPLAY", cmp.Or(os.Getenv("DISPLAY"), ":0"))
+		a.add("--setenv", "DISPLAY", cmp.Or(os.Getenv("DISPLAY"), ":0"))
 		if xa := os.Getenv("XAUTHORITY"); xa != "" {
-			add("--setenv", "XAUTHORITY", xa)
+			a.add("--setenv", "XAUTHORITY", xa)
 		}
 		if wd := os.Getenv("WAYLAND_DISPLAY"); wd != "" {
-			add("--setenv", "WAYLAND_DISPLAY", wd)
+			a.add("--setenv", "WAYLAND_DISPLAY", wd)
 		}
-		add("--setenv", "XDG_RUNTIME_DIR", runtimeDir)
+		a.add("--setenv", "XDG_RUNTIME_DIR", runtimeDir)
 	}
-	add("--setenv", "PS1", `(jail) \w \$ `)
+	a.add("--setenv", "PS1", `(jail) \w \$ `)
 
 	// Assemble the inner command.
 	var inner []string
@@ -793,18 +802,18 @@ func outer(argv []string) {
 			fatal(1, "cannot locate self: "+err.Error())
 		}
 		self, _ = filepath.EvalSymlinks(self)
-		add("--ro-bind", self, selfInJail)
-		add("--setenv", llEnvRO, llJoin("RO", llRO))
-		add("--setenv", llEnvROFiles, llJoin("ROFILES", llROFiles))
-		add("--setenv", llEnvRW, llJoin("RW", llRW))
-		add("--setenv", llEnvRWFiles, llJoin("RWFILES", llRWFiles))
+		a.add("--ro-bind", self, selfInJail)
+		a.add("--setenv", llEnvRO, llJoin("RO", llRO))
+		a.add("--setenv", llEnvROFiles, llJoin("ROFILES", llROFiles))
+		a.add("--setenv", llEnvRW, llJoin("RW", llRW))
+		a.add("--setenv", llEnvRWFiles, llJoin("RWFILES", llRWFiles))
 		// Entries are validated (and rejected) by the landlock stage; here we only
 		// normalise the comma-separated list into the newline-separated channel.
 		// FieldsFunc drops empties, so "443,,80" and " 443, 80 " need no cleanup.
 		if ps := strings.FieldsFunc(netPorts, func(r rune) bool {
 			return r == ',' || unicode.IsSpace(r)
 		}); len(ps) > 0 {
-			add("--setenv", llEnvPorts, strings.Join(ps, "\n"))
+			a.add("--setenv", llEnvPorts, strings.Join(ps, "\n"))
 		}
 		inner = append([]string{selfInJail, landlockExecFlag, "--"}, cmd...)
 	} else {
