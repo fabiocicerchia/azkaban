@@ -123,7 +123,18 @@ caps are per-*file*, so a loop creating many small files still fills the overlay
 `--mem-max 8G` is the real bound — cgroup v2 charges tmpfs pages to the group.
 It also sets `memory.swap.max=0`, without which the cap is advisory: with swap
 enabled, 256 MiB allocated fine under a 64 MiB cap because the kernel simply
-paged it out. azkaban warns and continues if no delegated cgroup tree exists.
+paged it out.
+
+**A `--mem-max` that cannot be enforced is refused, not warned about.** If there
+is no delegated cgroup v2 memory controller — common inside another container —
+the run stops. It used to warn and continue, which meant `azkaban --mem-max 8G`
+could run with no memory bound at all, having printed one line that scrolls
+away, on the flag this section calls the real bound. A cap that silently does
+nothing is worse than no cap, because the flag looks like it worked. Drop
+`--mem-max` to run without one deliberately.
+
+A run that did *not* ask for a cap still degrades to a warning: nobody asked for
+that one, and refusing it would break every run inside a container.
 
 It stays **opt-in** even though that leaves the overlay unbounded by default,
 because disabling swap is not a side effect to impose on every run: a workload
@@ -145,6 +156,53 @@ parse, sockets are opt-in and containerd is not offered at all.
 Details in [containers.md](containers.md).
 
 ---
+
+## Asking the policy a question
+
+`--dry-run` prints the resolved bwrap command line, and that is the audit trail:
+accurate, complete, copy-pasteable. It is also an answer to *what is the whole
+policy*, not to *what about this path*.
+
+`azkaban why` is the second question:
+
+```console
+$ azkaban why --path ~/.claude --op write
+/home/you/.claude
+  ALLOWED (write)
+  mechanism: --overlay-src + --tmp-overlay (throwaway tmpfs upper layer)
+  matched:   rwPaths .claude
+  survives:  no — discarded when the jail exits
+
+$ azkaban why --path ~/.ssh/id_rsa
+/home/you/.ssh/id_rsa
+  ABSENT (read)
+  mechanism: --tmpfs /home/you
+  matched:   default deny
+```
+
+The distinction in that second answer is the one worth having. `~/.ssh` was
+never mounted, so a read fails as `ENOENT` — reporting it as *denied* would send
+someone hunting for a permission nobody can grant.
+
+It answers from the same lists the bind loops use, walked in the same order, so
+the layer it reports is the layer that would end up on top: ro binds, then rw
+(overlaid by default), then `persist`, then `roFreeze`, then masks, last wins.
+It starts no jail and reads nothing but the config.
+
+The run flags are accepted as *simulation*, so the question can be "would this
+be allowed if I ran it that way": `--persist`, `--no-net`, `--net-ports`,
+`--no-landlock`, `--ro`, `--rw`, `--persist-path`. `--json` makes it consumable
+by tooling, and by an agent that has just hit an error it cannot interpret.
+
+On hosts it gives the honest answer rather than a comforting one: `--net-ports`
+is a port allowlist enforced by Landlock and cannot express a hostname, so a
+`--host` question says so instead of implying a filter that does not exist.
+
+**Not implemented: `--self`.** Answering from *inside* the jail is the variant
+that would actually help a confused agent, but the Landlock allowlists arrive as
+`AZKABAN_LL_*` and are deliberately stripped before the target command execs.
+Keeping them, or writing a policy file into the jail, is a change to what the
+jail contains — it belongs with the in-jail guidance work, not here.
 
 ## Security model
 
@@ -179,7 +237,8 @@ Two vectors are open by default:
   earn its keep is deliberate exploitation.
 - **No network egress filtering by host or domain.** `--net-ports` restricts
   outbound TCP *ports* at the kernel, which closes localhost services and LAN
-  scanning, but it cannot express "only api.anthropic.com".
+  scanning, but it cannot express "only api.anthropic.com". `azkaban why --host`
+  says exactly that rather than implying a filter.
 - **Same uid, no capability drop.** `CapEff` is already empty for a normal user;
   the tool runs as you, which is exactly why "as your user" is the boundary the
   docker proxy has to defend.

@@ -217,7 +217,35 @@ azkaban [flags] [--] <command> [args...]
                  its directory. For every run, use "persist" lines in the config.
   --dry-run      print the bwrap command instead of running it
   -h, --help     this help
+
+  azkaban why    explain what the jail would do with one path, host or port,
+                 without starting one. "azkaban why -h" for its flags.
 ```
+
+### Asking the policy a question
+
+`--dry-run` prints the whole resolved policy. `azkaban why` answers about one
+thing:
+
+```console
+$ azkaban why --path ~/.claude --op write
+/home/you/.claude
+  ALLOWED (write)
+  mechanism: --overlay-src + --tmp-overlay (throwaway tmpfs upper layer)
+  matched:   rwPaths .claude
+  survives:  no — discarded when the jail exits
+
+$ azkaban why --path ~/.ssh/id_rsa
+/home/you/.ssh/id_rsa
+  ABSENT (read)
+  mechanism: --tmpfs /home/you
+  matched:   default deny
+```
+
+`ABSENT`, not `DENIED`: `~/.ssh` was never mounted, so a read fails as `ENOENT`
+— and calling that a denial sends people hunting for a permission nobody can
+grant. Add `--json` for tooling, or the run flags (`--persist`, `--net-ports`,
+`--ro`, ...) to ask what the answer *would* be.
 
 More in [`docs/getting-started.md`](docs/getting-started.md).
 
@@ -235,8 +263,14 @@ allowlist, so it is refused rather than sanitised. Rename the directory.
 
 **`azkaban: warning: resource cgroup unavailable (...); memory is NOT capped.`**
 The cgroup v2 tree is not usable here — common inside another container. The
-jail still runs, but `--mem-max` is not enforced, and the overlay writes to
-RAM.
+jail still runs, but the overlay writes to RAM with no cap. You did not ask for
+one, so this is a warning.
+
+**`azkaban: --mem-max 8G cannot be enforced: ...`**
+The same condition, on a run that *did* ask for a cap — so it is refused rather
+than warned about. A cap that silently does nothing is worse than no cap: the
+flag looks like it worked while the jail runs unbounded. Delegate a cgroup v2
+memory controller, or drop `--mem-max`.
 
 **`azkaban: WARNING: this kernel allows TIOCSTI`**
 The jail shares your terminal, so a tool inside it can push characters into

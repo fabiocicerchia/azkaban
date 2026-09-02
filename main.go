@@ -160,6 +160,12 @@ func main() {
 		landlockStage(os.Args[2:]) // runs inside bwrap
 		return
 	}
+	// A query over the resolved policy, not a run. Kept a subcommand rather
+	// than a flag because it takes its own argument set and starts no jail.
+	if len(os.Args) > 1 && os.Args[1] == "why" {
+		whyCommand(os.Args[2:])
+		return
+	}
 	outer(os.Args[1:])
 }
 
@@ -944,9 +950,26 @@ func applyRlimits() {
 // child lands in the cgroup before it can fork; nil simply means the memory cap
 // is not enforced, never that the jail should refuse to start.
 func setupCgroup(memMax string, pidsMax int) *os.File {
+	// An explicitly requested cap that cannot be enforced is a hard failure, not
+	// a warning. docs/design.md positions --mem-max as "the real bound" on the
+	// RAM-backed overlay — the rlimits are per-file and do not bound total
+	// overlay growth — so degrading leaves the flag looking like it worked while
+	// the jail runs with no memory bound at all, having printed one line that
+	// scrolls away. Nothing asked for cannot be refused; only the pidsMax-only
+	// path still degrades, because nobody asked for that one.
+	unavailable := func(why string) *os.File {
+		if memMax != "" {
+			fatal(1, "--mem-max "+memMax+" cannot be enforced: "+why+".\n"+
+				"  A cap that silently does nothing is worse than no cap — this run would have\n"+
+				"  had no memory bound at all. Delegate a cgroup v2 memory controller, or drop\n"+
+				"  --mem-max to run without one.")
+		}
+		return cgroupUnavailable(why)
+	}
+
 	data, err := os.ReadFile("/proc/self/cgroup")
 	if err != nil {
-		return cgroupUnavailable("cannot read /proc/self/cgroup")
+		return unavailable("cannot read /proc/self/cgroup")
 	}
 	var rel string
 	for _, l := range strings.Split(string(data), "\n") {
@@ -955,23 +978,25 @@ func setupCgroup(memMax string, pidsMax int) *os.File {
 		}
 	}
 	if rel == "" {
-		return cgroupUnavailable("no cgroup v2 mount for this process")
+		return unavailable("no cgroup v2 mount for this process")
 	}
 	parent := filepath.Dir(filepath.Join("/sys/fs/cgroup", rel))
 	sub, _ := os.ReadFile(filepath.Join(parent, "cgroup.subtree_control"))
 	if !strings.Contains(string(sub), "memory") {
-		return cgroupUnavailable("no delegated memory controller at " + parent)
+		return unavailable("no delegated memory controller at " + parent)
 	}
 
 	dir := filepath.Join(parent, fmt.Sprintf("azkaban-%d", os.Getpid()))
 	if err := os.Mkdir(dir, 0o755); err != nil {
-		return cgroupUnavailable("cannot create " + dir + ": " + err.Error())
+		return unavailable("cannot create " + dir + ": " + err.Error())
 	}
 	tempTrack(dir) // removed by the same cleanup path as the temp files
 
 	if memMax != "" {
+		// Same reasoning: reaching here means the tree is usable, so a refused
+		// write is the cap not being applied, and it must not pass as a warning.
 		if err := os.WriteFile(filepath.Join(dir, "memory.max"), []byte(memMax), 0o644); err != nil {
-			fmt.Fprintln(os.Stderr, "azkaban: warning: could not set memory.max: "+err.Error())
+			fatal(1, "--mem-max "+memMax+" cannot be enforced: could not set memory.max: "+err.Error())
 		}
 		// Without this the cap is advisory: memory.max triggers reclaim, and on a
 		// machine with swap the excess is simply paged out instead of refused.
@@ -987,7 +1012,7 @@ func setupCgroup(memMax string, pidsMax int) *os.File {
 
 	fd, err := os.Open(dir)
 	if err != nil {
-		return cgroupUnavailable("cannot open " + dir)
+		return unavailable("cannot open " + dir)
 	}
 	return fd
 }
@@ -1001,9 +1026,10 @@ func maskFileOnce(p *string) string {
 	return *p
 }
 
-// cgroupUnavailable - Warns once and returns nil, the "no cap" answer every
-// failed step in setupCgroup shares. Loud on purpose: a silently uncapped jail
-// is the one that takes the host down.
+// cgroupUnavailable - Warns once and returns nil, the "no cap" answer for a run
+// that did not ask for one. Loud on purpose: a silently uncapped jail is the one
+// that takes the host down. A run that DID ask is refused instead — see the
+// unavailable closure in setupCgroup.
 func cgroupUnavailable(why string) *os.File {
 	fmt.Fprintln(os.Stderr, "azkaban: warning: resource cgroup unavailable ("+why+"); memory is NOT capped.")
 	return nil
@@ -1290,6 +1316,9 @@ func usage() {
                  its directory. For every run, use "persist" lines in the config.
   --dry-run      print the bwrap command instead of running it
   -h, --help     this help
+
+  azkaban why    explain what the jail would do with one path, host or port,
+                 without starting one. "azkaban why -h" for its flags.
 `)
 }
 

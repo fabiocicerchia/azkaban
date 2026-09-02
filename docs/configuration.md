@@ -143,6 +143,29 @@ try the same keyring, and `ro .config/gh` is read-only besides). With
 to hand the jail a token via `env GH_TOKEN`, which *is* stealable — prefer
 opening the PR from the host.
 
+## Checking what a line actually did
+
+A config file that merges with built-in lists and run flags is exactly the kind
+of thing that is easy to get subtly wrong, and the failure is silent — a `mask`
+line that does nothing looks identical to one that works.
+
+`azkaban why` answers from the merged result:
+
+```console
+$ azkaban why --path ~/.config/gh --op read
+  DENIED (read)
+  mechanism: masked (empty tmpfs or empty file)
+  matched:   maskPaths .config/gh
+
+$ azkaban why --path ~/.config/gh --op read --ro .config/gh
+  ALLOWED (read)
+  matched:   rwPaths .config
+```
+
+The second is the documented un-masking opt-out, checked without editing the
+file first. Add `--json` for a machine, or for an agent trying to work out why a
+read failed.
+
 ## Credential masking
 
 Top-level hiding is deny-by-default — `~/.ssh` does not exist in the jail. But
