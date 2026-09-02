@@ -16,6 +16,7 @@ rw  /srv/shared-cache       # bind read-write (overlaid like the rest)
 persist .claude/.credentials.json   # writable AND not overlaid — survives exit
 env ANTHROPIC_API_KEY       # forward one host variable
 mask .config/mytool/token   # blank out a path azkaban does not know about
+audit off                   # stop recording runs (they are recorded by default)
 ```
 
 That file is **trusted input**, which is only safe because azkaban re-binds
@@ -165,6 +166,33 @@ $ azkaban why --path ~/.config/gh --op read --ro .config/gh
 The second is the documented un-masking opt-out, checked without editing the
 file first. Add `--json` for a machine, or for an agent trying to work out why a
 read failed.
+
+## The run record
+
+Every run writes one JSONL file to `$XDG_STATE_HOME/azkaban/audit/` unless you
+say otherwise: `--no-audit` for one run, `audit off` in the config for good.
+Only the literal word `off` disables it — a typo leaves the record on, which is
+the direction a mistake should fail in.
+
+It answers the question `--dry-run` cannot, because `--dry-run` is in the future
+tense: *what did that run actually have access to, and what did it do?* The
+resolved policy after the merge, the mode flags, the full bwrap command line,
+every degradation that would otherwise have scrolled off your terminal, every
+docker-filter decision, and the exit code. See
+[design.md](design.md#what-a-run-actually-did).
+
+Two things worth knowing before you point anything at those files:
+
+- **`env NAME` is recorded by name, never by value.** The record says this run
+  could see `ANTHROPIC_API_KEY`; it does not say what it was.
+- **Command lines are scrubbed.** `--token abc` and a bare high-entropy
+  argument both land as `<redacted>`. The heuristic errs towards redacting, so
+  an ordinary argument occasionally disappears — that is the intended trade.
+
+Nothing prunes the directory. One small file per run adds up on a machine that
+runs the jail all day; a `find … -mtime +30 -delete` in a timer is the whole
+answer, and inventing a retention policy inside the tool would be a second thing
+to configure.
 
 ## Credential masking
 

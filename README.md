@@ -216,6 +216,10 @@ azkaban [flags] [--] <command> [args...]
                  the whole allowlist destroyable. Repeatable; name the file, not
                  its directory. For every run, use "persist" lines in the config.
   --dry-run      print the bwrap command instead of running it
+  --no-audit     do not record this run. Every run is otherwise written as JSONL
+                 to $XDG_STATE_HOME/azkaban/audit/ — the resolved policy, the
+                 mode flags, every degradation, every docker-filter decision and
+                 the exit code. "audit off" in the config turns it off for good.
   -h, --help     this help
 
   azkaban why    explain what the jail would do with one path, host or port,

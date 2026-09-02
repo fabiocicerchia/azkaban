@@ -157,6 +157,57 @@ Details in [containers.md](containers.md).
 
 ---
 
+## What a run actually did
+
+`--dry-run` and `azkaban why` both answer in the future tense. Neither survives
+the run. Every degradation warning and every docker-filter denial went to stderr
+and scrolled away with the terminal — which is exactly where you are looking
+once something has already gone wrong.
+
+So every run writes one JSONL file to `$XDG_STATE_HOME/azkaban/audit/`:
+
+```console
+$ jq -c . ~/.local/state/azkaban/audit/20260902T141500Z-4821.jsonl
+{"t":"...","event":"start","argv":["claude"],"cwd":"/home/you/proj","pid":4821}
+{"t":"...","event":"degraded","what":"tiocsti-permissive","detail":"this kernel allows TIOCSTI; ..."}
+{"t":"...","event":"policy","rw":[".cache",".claude",...],"mask":[".config/gh",...],"env_forwarded":["HOME","PATH","ANTHROPIC_API_KEY"],"landlock":{"rw":["/tmp","/home/you/proj"],...}}
+{"t":"...","event":"mode","overlay":true,"landlock":true,"no_net":false,"socket":"docker","bwrap_command":"/usr/bin/bwrap --clearenv ..."}
+{"t":"...","event":"docker","decision":"denied","method":"POST","path":"/v1.45/containers/create","reason":"bind mount of / is refused"}
+{"t":"...","event":"exit","code":0,"duration_ms":183422}
+```
+
+**On by default**, because a log nobody enabled records nothing. `--no-audit`
+for one run, `audit off` in the config for good. `--dry-run` records nothing —
+it changes nothing, and recording it would fill the directory with runs that
+never happened.
+
+Four things it is deliberately careful about:
+
+- **The `degraded` events are the point.** Every one of them was a single stderr
+  line: no `--tmp-overlay`, a rootful docker socket, an ignored `persist`, a
+  TIOCSTI-permissive kernel, an unavailable cgroup. They are what you go looking
+  for afterwards, and they are exactly what scrolls away.
+- **Allowed docker calls are recorded, denials are recorded *and* printed.**
+  Printing every permitted API call would drown the denials that matter; not
+  recording them leaves "what did this jail do with the socket" unanswerable.
+- **Credentials are scrubbed on the way in**, not stored and hoped about.
+  `--token abc` and a bare high-entropy argument both become `<redacted>`. It
+  errs towards redacting: a record that hides a harmless argument is an
+  annoyance, and the other mistake is a credential on disk.
+- **Forwarded environment variables are recorded by name only.** `env NAME` is
+  how an API key reaches the jail; "this run could see that variable" is the
+  useful half, and the value is the half that must never be in a file.
+
+The policy is recorded *after* the merge and after every entry with no source on
+the host has been skipped — what the jail got, not what was asked for — and the
+full bwrap command line goes in alongside it, so the record is a superset of
+what `--dry-run` would have printed.
+
+Not hash-chained, not signed. That is what you add once the log is evidence
+against the child that produced it; a jailed process can rewrite this file only
+if the state directory is bound writable, which it is not by default. Claiming
+tamper-evidence without the chain would be worse than the honest version.
+
 ## Asking the policy a question
 
 `--dry-run` prints the resolved bwrap command line, and that is the audit trail:

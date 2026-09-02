@@ -41,6 +41,7 @@ import (
 
 	"github.com/landlock-lsm/go-landlock/landlock"
 	"golang.org/x/sys/unix"
+	"time"
 )
 
 // --------------------------------------------------------------------------- //
@@ -281,6 +282,9 @@ func outer(argv []string) {
 	fNoLandlock := fs.Bool("no-landlock", false, "")
 	fKeepEnv := fs.Bool("keep-env", false, "")
 	fDry := fs.Bool("dry-run", false, "")
+	// On by default: a log nobody enabled records nothing. --no-audit and an
+	// `audit off` line in the config are the two ways out.
+	fNoAudit := fs.Bool("no-audit", false, "")
 	// Per-run equivalents of the config file's "ro"/"rw" lines, for a path this
 	// one run needs and every future run should not. Repeatable; same $HOME-relative
 	// resolution, same bindSafe rejection, same un-masking power as the file.
@@ -301,6 +305,7 @@ func outer(argv []string) {
 	gpu, overlay, landlockOn, rlimits := !*fNoGPU, !*fPersist, !*fNoLandlock, !*fNoRlimits
 	display, netIsolate, sshAgent := *fDisplay, *fNoNet, *fSSHAgent
 	keepEnv, dry, allowUserns, rawSock := *fKeepEnv, *fDry, *fAllowUserns, *fRawSock
+	noAudit := *fNoAudit
 	memMax, netPorts := *fMemMax, *fNetPorts
 	// No container socket is bound unless explicitly asked for. On-by-default
 	// meant every run exposed a full container API — the one interface the jail
@@ -350,6 +355,18 @@ func outer(argv []string) {
 	uc.ro = append(uc.ro, fRO...)
 	uc.rw = append(uc.rw, fRW...)
 	uc.persist = append(uc.persist, fPersistPath...)
+
+	// --dry-run changes nothing, so there is nothing to record; recording it
+	// would fill the directory with runs that never happened.
+	auditLog = startAudit(!noAudit && !uc.auditOff && !dry, time.Now())
+	defer auditLog.close(0)
+	auditLog.event("start", map[string]any{
+		"argv":    redactArgv(os.Args[1:]),
+		"command": redactArgv(cmd),
+		"cwd":     cwd,
+		"home":    home,
+		"pid":     os.Getpid(),
+	})
 
 	// Patched /etc/hosts and /etc/resolv.conf. /run is tmpfs'd (empty) inside
 	// the jail, which breaks the usual resolv.conf -> /run/.../stub-resolv.conf
@@ -492,14 +509,14 @@ func outer(argv []string) {
 				strings.Join(containerSockets[socketKind], ", ")+
 				"). containerd is not offered: it speaks gRPC, which the filtering proxy cannot inspect.")
 		case realSock == "/var/run/docker.sock" || realSock == "/run/podman/podman.sock":
-			fmt.Fprintln(os.Stderr, "azkaban: WARNING: no rootless "+socketKind+
+			auditLog.degraded("rootful-container-socket", "no rootless "+socketKind+
 				"; using ROOTFUL "+realSock+" = host root inside the jail. Set up a rootless daemon to close this.")
 		}
 
 		sockForJail := realSock // path bound FROM the host
 		switch {
 		case rawSock:
-			fmt.Fprintln(os.Stderr, "azkaban: WARNING: --unfiltered-container-socket binds the UNFILTERED socket; `docker run -v /:/h` can read/write everything your user owns.")
+			auditLog.degraded("unfiltered-container-socket", "--unfiltered-container-socket binds the UNFILTERED socket; `docker run -v /:/h` can read/write everything your user owns.")
 		case !dry:
 			ps, err := startDockerFilterProxy(realSock, cwd)
 			if err != nil {
@@ -575,7 +592,7 @@ func outer(argv []string) {
 	// --persist turns it off for the runs where writes are meant to survive.
 	// Note the project dir is NEVER overlaid; it is the workspace, and it has git.
 	if overlay && !bwrapHas("--tmp-overlay") {
-		fmt.Fprintln(os.Stderr, "azkaban: WARNING: this bwrap has no --tmp-overlay; falling back to real writes. Upgrade bubblewrap (>= 0.9) or pass --persist to silence this.")
+		auditLog.degraded("no-tmp-overlay", "this bwrap has no --tmp-overlay; falling back to real writes. Upgrade bubblewrap (>= 0.9) or pass --persist to silence this.")
 		overlay = false
 	}
 	for _, rel := range slices.Concat(rwPaths, uc.rw) {
@@ -626,7 +643,7 @@ func outer(argv []string) {
 			// Loud, because silence is the failure this whole feature exists to
 			// fix: a persist line that does nothing looks exactly like one that
 			// works until the token is gone.
-			fmt.Fprintln(os.Stderr, "azkaban: WARNING: persist "+rel+" ignored: no such path on the host. "+
+			auditLog.degraded("persist-ignored", "persist "+rel+" ignored: no such path on the host. "+
 				"A bind needs an existing source — create it outside the jail first.")
 			continue
 		}
@@ -795,6 +812,42 @@ func outer(argv []string) {
 	full := append(append([]string{"/usr/bin/bwrap"}, a...), "--")
 	full = append(full, inner...)
 
+	// Recorded here rather than at parse time: this is the point where every
+	// list has been merged, every entry that had no source on the host has been
+	// skipped, and the Landlock allowlists are final. Anything earlier would
+	// record what was asked for rather than what the jail got.
+	auditLog.event("policy", map[string]any{
+		"ro":      slices.Concat(roPaths, uc.ro),
+		"rw":      slices.Concat(rwPaths, uc.rw),
+		"persist": uc.persist,
+		"mask":    slices.Concat(maskPaths, uc.mask),
+		"freeze":  roFreeze,
+		// Names only, never values: `env NAME` is how an API key reaches the
+		// jail, and the useful half is "this run could see that variable".
+		"env_forwarded": envNames(slices.Concat(envKeep, uc.env)),
+		"landlock": map[string]any{
+			"ro": llRO, "ro_files": llROFiles, "rw": llRW, "rw_files": llRWFiles,
+			"ports": netPorts,
+		},
+	})
+	auditLog.event("mode", map[string]any{
+		"overlay":       overlay,
+		"persist":       *fPersist,
+		"landlock":      landlockOn,
+		"rlimits":       rlimits,
+		"allow_userns":  allowUserns,
+		"keep_env":      keepEnv,
+		"no_net":        netIsolate,
+		"net_ports":     netPorts,
+		"display":       display,
+		"ssh_agent":     sshAgent,
+		"gpu":           gpu,
+		"mem_max":       memMax,
+		"socket":        socketKind,
+		"socket_raw":    rawSock,
+		"bwrap_command": shquote(full),
+	})
+
 	if dry {
 		fmt.Println(shquote(full))
 		return
@@ -840,7 +893,11 @@ func outer(argv []string) {
 	}
 	if err := c.Run(); err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
-			tempCleanup() // os.Exit does not run defers
+			// os.Exit runs no defers, so the record has to be closed by hand
+			// here — an unclosed log is one missing its exit line, which is the
+			// line that says whether the run finished.
+			auditLog.close(ee.ExitCode())
+			tempCleanup()
 			os.Exit(ee.ExitCode())
 		}
 		fatal(1, err.Error())
@@ -886,7 +943,7 @@ func warnTIOCSTI() {
 	if fi, err := os.Stdin.Stat(); err != nil || fi.Mode()&os.ModeCharDevice == 0 {
 		return // not on a terminal, nothing to inject into
 	}
-	fmt.Fprintln(os.Stderr, "azkaban: WARNING: this kernel allows TIOCSTI; the jail shares your terminal and can inject commands your shell runs after it exits. Close it host-wide with: sysctl -w dev.tty.legacy_tiocsti=0")
+	auditLog.degraded("tiocsti-permissive", "this kernel allows TIOCSTI; the jail shares your terminal and can inject commands your shell runs after it exits. Close it host-wide with: sysctl -w dev.tty.legacy_tiocsti=0")
 }
 
 // Resource caps. The default overlay puts writes in a tmpfs, i.e. in RAM, which
@@ -1003,7 +1060,7 @@ func setupCgroup(memMax string, pidsMax int) *os.File {
 		// Measured: 256 MiB allocated fine under a 64 MiB cap until swap was
 		// disabled for the group.
 		if err := os.WriteFile(filepath.Join(dir, "memory.swap.max"), []byte("0"), 0o644); err != nil {
-			fmt.Fprintln(os.Stderr, "azkaban: warning: could not disable swap for the cgroup; --mem-max will page out rather than refuse.")
+			auditLog.degraded("cgroup-swap", "could not disable swap for the cgroup; --mem-max will page out rather than refuse.")
 		}
 	}
 	if pidsMax > 0 {
@@ -1031,7 +1088,7 @@ func maskFileOnce(p *string) string {
 // that takes the host down. A run that DID ask is refused instead — see the
 // unavailable closure in setupCgroup.
 func cgroupUnavailable(why string) *os.File {
-	fmt.Fprintln(os.Stderr, "azkaban: warning: resource cgroup unavailable ("+why+"); memory is NOT capped.")
+	auditLog.degraded("cgroup-unavailable", "resource cgroup unavailable ("+why+"); memory is NOT capped.")
 	return nil
 }
 
@@ -1184,7 +1241,13 @@ func bindSafe(home, p string) bool {
 // unless absolute.
 // "mask" blanks a path out; naming a masked path with "ro"/"rw"/"persist"
 // un-masks it. "persist" also opts that one path out of the throwaway overlay.
-type userConf struct{ ro, rw, env, mask, persist []string }
+type userConf struct {
+	ro, rw, env, mask, persist []string
+	// auditOff records `audit off`. A bool rather than a list because it is a
+	// switch, and the default (record) has to survive a config that says
+	// nothing about it.
+	auditOff bool
+}
 
 // loadUserBinds - Reads ~/.config/azkaban/config, or an empty config when
 // there is none. A missing file is the normal case, not an error.
@@ -1221,6 +1284,10 @@ func parseUserBinds(data string) userConf {
 			c.mask = append(c.mask, val)
 		case "persist":
 			c.persist = append(c.persist, val)
+		case "audit":
+			// Only "off" turns it off. Anything else — including a typo — leaves
+			// the record on, which is the direction a mistake should fail in.
+			c.auditOff = val == "off"
 		}
 	}
 	return c
@@ -1258,7 +1325,12 @@ func shquote(args []string) string {
 // not run defers, so the cleanup has to happen here rather than being trusted
 // to the caller.
 func fatal(code int, msg string) {
-	tempCleanup() // os.Exit does not run defers
+	// os.Exit runs no defers, so both of these have to be done by hand. A
+	// record with no exit line is one that cannot be told apart from a run
+	// still in progress — and a run that died is exactly the one being read.
+	auditLog.event("fatal", map[string]any{"message": msg})
+	auditLog.close(code)
+	tempCleanup()
 	fmt.Fprintln(os.Stderr, "azkaban: "+msg)
 	os.Exit(code)
 }
@@ -1315,6 +1387,10 @@ func usage() {
                  the whole allowlist destroyable. Repeatable; name the file, not
                  its directory. For every run, use "persist" lines in the config.
   --dry-run      print the bwrap command instead of running it
+  --no-audit     do not record this run. Every run is otherwise written as JSONL
+                 to $XDG_STATE_HOME/azkaban/audit/ — the resolved policy, the
+                 mode flags, every degradation, every docker-filter decision and
+                 the exit code. "audit off" in the config turns it off for good.
   -h, --help     this help
 
   azkaban why    explain what the jail would do with one path, host or port,
