@@ -157,6 +157,63 @@ Details in [containers.md](containers.md).
 
 ---
 
+## Rollback: destruction as a diff, not a loss
+
+The overlay cannot tell destruction from useful work, so it discards both.
+`--persist` is the only escape and it is all-or-nothing — this document already
+says there is no way to keep `~/.claude/projects` while `rm -rf ~/.claude` stays
+impossible. So shell history, caches and transcripts are lost as collateral on
+every default run, and the workaround costs the protection.
+
+`--rollback` answers the question the overlay cannot:
+
+```console
+$ azkaban --rollback claude
+azkaban: rollback: snapshotted 1284 file(s); writes this run are REAL
+...
+azkaban: rollback: 20260902T141500Z — 47 deleted, 3 modified.
+  Review: azkaban rollback show 20260902T141500Z
+
+$ azkaban rollback restore 20260902T141500Z .claude/projects
+  restored  /home/you/.claude/projects/a.jsonl
+  ...
+```
+
+For the incident this repo was written after — `rm -rf ~/.claude` against a real
+home — that is strictly better than discarding everything: the data was gone,
+and here it would have been a list to review.
+
+It is an **alternative** to the overlay, not a layer on it. Rollback implies
+real writes, because there is nothing to review if they never happened, and
+leaving the overlay on would snapshot a directory nothing writes to and report
+that the run changed nothing. A review screen that is always empty is worse than
+none.
+
+Design notes worth knowing:
+
+- **Content-addressable, keyed by SHA-256.** An unchanged file across twenty
+  runs costs one copy. That is what makes snapshotting before every run
+  affordable, and it has to be affordable or the flag stays off.
+- **The closing snapshot is taken on both exit paths.** A jail that exits
+  non-zero is exactly the one that destroyed something: the incident above
+  exited non-zero and had already deleted five months of data, which is what
+  `TestPersist_ExitCodeIsNotEvidence` pins. Snapshotting only on success would
+  miss every case that matters.
+- **`.git`, `node_modules`, `target` and friends are skipped**, and a root over
+  20,000 files is skipped whole and recorded as a degradation. git is its own
+  snapshot mechanism; the rest are regenerable.
+- **Symlinks are recorded by name, never followed.** Following one would pull an
+  untracked tree into the snapshot, and restoring through it would write outside
+  the root.
+- **Restore verifies the hash before writing.** A corrupted object restored
+  silently is the one failure that would make this actively harmful.
+- **Additions are listed but never undone.** Putting one back means deleting it,
+  and that is the operator's call.
+
+`azkaban rollback cleanup [N]` keeps the newest N sessions and then sweeps any
+stored content nothing refers to — in that order, because sweeping first would
+leave a session restorable in name only.
+
 ## Egress filtering by host
 
 `--net-ports` restricts outbound TCP *ports* at the kernel. That closes

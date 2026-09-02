@@ -223,6 +223,11 @@ azkaban [flags] [--] <command> [args...]
                  must keep across runs (a login token) without --persist making
                  the whole allowlist destroyable. Repeatable; name the file, not
                  its directory. For every run, use "persist" lines in the config.
+  --rollback     snapshot the writable $HOME roots either side of the run and
+                 let writes land FOR REAL, so destruction becomes a diff to
+                 review rather than a loss. An alternative to the default
+                 throwaway overlay, not a layer on it. Review and undo with
+                 "azkaban rollback show|restore".
   --dry-run      print the bwrap command instead of running it
   --no-guidance  do not describe the jail to the tool inside it. By default
                  /run/azkaban holds a read-only policy.json, a README, a Claude

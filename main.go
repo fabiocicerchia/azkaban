@@ -167,6 +167,10 @@ func main() {
 		whyCommand(os.Args[2:])
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "rollback" {
+		rollbackCommand(os.Args[2:])
+		return
+	}
 	outer(os.Args[1:])
 }
 
@@ -288,6 +292,10 @@ func outer(argv []string) {
 	// The jail describes itself to the tool inside it. Opt-out for a run where
 	// three extra read-only binds under /run are unwanted.
 	fNoGuidance := fs.Bool("no-guidance", false, "")
+	// Snapshot either side of the run instead of discarding writes. An
+	// ALTERNATIVE to the overlay, not a layer on it: rollback implies real
+	// writes, because there is nothing to review if they never happened.
+	fRollback := fs.Bool("rollback", false, "")
 	// Per-run equivalents of the config file's "ro"/"rw" lines, for a path this
 	// one run needs and every future run should not. Repeatable; same $HOME-relative
 	// resolution, same bindSafe rejection, same un-masking power as the file.
@@ -312,7 +320,16 @@ func outer(argv []string) {
 	gpu, overlay, landlockOn, rlimits := !*fNoGPU, !*fPersist, !*fNoLandlock, !*fNoRlimits
 	display, netIsolate, sshAgent := *fDisplay, *fNoNet, *fSSHAgent
 	keepEnv, dry, allowUserns, rawSock := *fKeepEnv, *fDry, *fAllowUserns, *fRawSock
-	noAudit, noGuidance := *fNoAudit, *fNoGuidance
+	noAudit, noGuidance, rollbackOn := *fNoAudit, *fNoGuidance, *fRollback
+	if rollbackOn {
+		if *fPersist {
+			fatal(2, "--rollback already means real writes; --persist is redundant with it")
+		}
+		// The overlay is what rollback replaces. Leaving it on would snapshot a
+		// directory nothing ever writes to, and report that the run changed
+		// nothing — a review screen that is always empty is worse than none.
+		overlay = false
+	}
 	memMax, netPorts := *fMemMax, *fNetPorts
 	var egressHosts []string
 	// No container socket is bound unless explicitly asked for. On-by-default
@@ -792,6 +809,28 @@ func outer(argv []string) {
 	}
 	add("--setenv", "PS1", `(jail) \w \$ `)
 
+	// The "before" snapshot, taken while the host is still untouched. Under
+	// --rollback the overlay is off, so from here on the run's writes are real.
+	var rbSession *rollbackSession
+	if rollbackOn && !dry {
+		roots := presentUnder(home, slices.Concat(rwPaths, uc.rw))
+		start := time.Now().UTC()
+		before, err := takeSnapshot(roots, rollbackStore())
+		if err != nil {
+			fatal(1, "rollback snapshot: "+err.Error())
+		}
+		for _, skipped := range before.Skipped {
+			auditLog.degraded("rollback-skipped", "not snapshotted: "+skipped+
+				"; changes there cannot be rolled back")
+		}
+		rbSession = &rollbackSession{
+			ID: start.Format("20060102T150405Z"), Cmd: cmd, Cwd: cwd,
+			Start: start, Before: before,
+		}
+		fmt.Fprintf(os.Stderr, "azkaban: rollback: snapshotted %d file(s); writes this run are REAL\n",
+			len(before.Entries))
+	}
+
 	// Egress filtering. This must come BEFORE the inner command is assembled:
 	// that is where netPorts is turned into AZKABAN_LL_PORTS, and narrowing it
 	// afterwards would be a no-op that looks like a working filter.
@@ -975,8 +1014,14 @@ func outer(argv []string) {
 			c.SysProcAttr = &syscall.SysProcAttr{UseCgroupFD: true, CgroupFD: int(fd.Fd())}
 		}
 	}
-	if err := c.Run(); err != nil {
-		if ee, ok := err.(*exec.ExitError); ok {
+	runErr := c.Run()
+	// Taken before anything else, and on BOTH exit paths. A jail that exits
+	// non-zero is exactly the one that destroyed something — the incident in
+	// docs/design.md exited non-zero and had already deleted five months of
+	// data. Snapshotting only on success would miss every case that matters.
+	finishRollback(rbSession)
+	if runErr != nil {
+		if ee, ok := runErr.(*exec.ExitError); ok {
 			// os.Exit runs no defers, so the record has to be closed by hand
 			// here — an unclosed log is one missing its exit line, which is the
 			// line that says whether the run finished.
@@ -984,8 +1029,47 @@ func outer(argv []string) {
 			tempCleanup()
 			os.Exit(ee.ExitCode())
 		}
-		fatal(1, err.Error())
+		fatal(1, runErr.Error())
 	}
+}
+
+// finishRollback takes the closing snapshot and reports what changed.
+func finishRollback(s *rollbackSession) {
+	if s == nil {
+		return
+	}
+	after, err := takeSnapshot(s.Before.Roots, rollbackStore())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "azkaban: rollback: closing snapshot failed ("+err.Error()+
+			"); the run is recorded but not reviewable")
+		return
+	}
+	s.After, s.End = after, time.Now().UTC()
+	if err := s.save(); err != nil {
+		fmt.Fprintln(os.Stderr, "azkaban: rollback: cannot save the session ("+err.Error()+")")
+		return
+	}
+	changes := diffSnapshots(s.Before, s.After)
+	var deleted, modified int
+	for _, c := range changes {
+		switch c.Kind {
+		case "deleted":
+			deleted++
+		case "modified":
+			modified++
+		}
+	}
+	auditLog.event("rollback", map[string]any{
+		"session": s.ID, "deleted": deleted, "modified": modified, "changes": len(changes),
+	})
+	if deleted == 0 && modified == 0 {
+		fmt.Fprintf(os.Stderr, "azkaban: rollback: %s — nothing was deleted or modified\n", s.ID)
+		return
+	}
+	// Loud, and with the command to run. This is the moment someone needs it.
+	fmt.Fprintf(os.Stderr,
+		"azkaban: rollback: %s — %d deleted, %d modified.\n  Review: azkaban rollback show %s\n",
+		s.ID, deleted, modified, s.ID)
 }
 
 // --------------------------------------------------------------------------- //
@@ -1512,6 +1596,11 @@ func usage() {
                  must keep across runs (a login token) without --persist making
                  the whole allowlist destroyable. Repeatable; name the file, not
                  its directory. For every run, use "persist" lines in the config.
+  --rollback     snapshot the writable $HOME roots either side of the run and
+                 let writes land FOR REAL, so destruction becomes a diff to
+                 review rather than a loss. An alternative to the default
+                 throwaway overlay, not a layer on it. Review and undo with
+                 "azkaban rollback show|restore".
   --dry-run      print the bwrap command instead of running it
   --no-guidance  do not describe the jail to the tool inside it. By default
                  /run/azkaban holds a read-only policy.json, a README, a Claude
@@ -1525,6 +1614,7 @@ func usage() {
 
   azkaban why    explain what the jail would do with one path, host or port,
                  without starting one. "azkaban why -h" for its flags.
+  azkaban rollback  list, review and undo what a --rollback run changed.
 `)
 }
 
