@@ -301,8 +301,11 @@ func outer(argv []string) {
 	// resolution, same bindSafe rejection, same un-masking power as the file.
 	// Repeatable host allowlist for the egress proxy. Same file-and-flag pairing
 	// as ro/rw: `net <host>` in the config is the every-run form.
-	var fNetHost stringList
+	var fNetHost, fCredential stringList
 	fs.Var(&fNetHost, "net-host", "")
+	// `credential github` / `credential github write`. Same file-and-flag
+	// pairing as everything else.
+	fs.Var(&fCredential, "credential", "")
 	var fRO, fRW, fPersistPath stringList
 	fs.Var(&fRO, "ro", "")
 	fs.Var(&fRW, "rw", "")
@@ -331,7 +334,7 @@ func outer(argv []string) {
 		overlay = false
 	}
 	memMax, netPorts := *fMemMax, *fNetPorts
-	var egressHosts []string
+	var egressHosts, brokerPorts []string
 	// No container socket is bound unless explicitly asked for. On-by-default
 	// meant every run exposed a full container API — the one interface the jail
 	// cannot police from the inside.
@@ -381,6 +384,7 @@ func outer(argv []string) {
 	uc.rw = append(uc.rw, fRW...)
 	uc.persist = append(uc.persist, fPersistPath...)
 	uc.net = append(uc.net, fNetHost...)
+	uc.credential = append(uc.credential, fCredential...)
 
 	// --dry-run changes nothing, so there is nothing to record; recording it
 	// would fill the directory with runs that never happened.
@@ -831,6 +835,39 @@ func outer(argv []string) {
 			len(before.Entries))
 	}
 
+	// Credential brokering. Resolved on the HOST, here, before the jail exists:
+	// that is the whole mechanism, and nothing after this point has to be
+	// trusted with the secret.
+	for _, directive := range uc.credential {
+		name, write, err := parseCredentialDirective(directive)
+		if err != nil {
+			fatal(2, "credential: "+err.Error())
+		}
+		if dry {
+			// No listener and no secret read in a dry run, but the policy is
+			// still disclosed — --dry-run is the audit trail.
+			add("--setenv", "AZKABAN_CREDENTIAL_"+strings.ToUpper(name), "<brokered at 127.0.0.1:<port>>")
+			continue
+		}
+		b, err := startCredentialBroker(name, write)
+		if err != nil {
+			fatal(1, "credential broker: "+err.Error())
+		}
+		for k, v := range b.JailEnv() {
+			add("--setenv", k, v)
+		}
+		// The broker is on loopback, so it needs the same port exemption the
+		// egress proxy does. Appended rather than replacing: a run can broker a
+		// credential and filter egress at once.
+		brokerPorts = append(brokerPorts, strconv.Itoa(b.Port))
+		mode := "read-only"
+		if write {
+			mode = "read-write"
+		}
+		fmt.Fprintf(os.Stderr, "azkaban: brokering the %s credential (%s); the token never enters the jail\n",
+			name, mode)
+	}
+
 	// Egress filtering. This must come BEFORE the inner command is assembled:
 	// that is where netPorts is turned into AZKABAN_LL_PORTS, and narrowing it
 	// afterwards would be a no-op that looks like a working filter.
@@ -871,6 +908,20 @@ func outer(argv []string) {
 			netPorts = "<proxy port>"
 		}
 		egressHosts = uc.net
+	}
+
+	// Broker ports join the ConnectTCP allowlist. Done after the egress block so
+	// that narrowing to the proxy does not lock the jail out of its own broker.
+	if len(brokerPorts) > 0 {
+		if netPorts == "" && !netIsolate {
+			// No port policy at all: the broker needs no exemption because
+			// nothing is being restricted.
+			brokerPorts = nil
+		} else {
+			netPorts = strings.Join(append(strings.FieldsFunc(netPorts, func(r rune) bool {
+				return r == ',' || unicode.IsSpace(r)
+			}), brokerPorts...), ",")
+		}
 	}
 
 	// Assemble the inner command.
@@ -1442,7 +1493,7 @@ func bindSafe(home, p string) bool {
 // "mask" blanks a path out; naming a masked path with "ro"/"rw"/"persist"
 // un-masks it. "persist" also opts that one path out of the throwaway overlay.
 type userConf struct {
-	ro, rw, env, mask, persist, net []string
+	ro, rw, env, mask, persist, net, credential []string
 	// auditOff records `audit off`. A bool rather than a list because it is a
 	// switch, and the default (record) has to survive a config that says
 	// nothing about it.
@@ -1486,6 +1537,8 @@ func parseUserBinds(data string) userConf {
 			c.persist = append(c.persist, val)
 		case "net":
 			c.net = append(c.net, val)
+		case "credential":
+			c.credential = append(c.credential, val)
 		case "audit":
 			// Only "off" turns it off. Anything else — including a typo — leaves
 			// the record on, which is the direction a mistake should fail in.
@@ -1596,6 +1649,12 @@ func usage() {
                  must keep across runs (a login token) without --persist making
                  the whole allowlist destroyable. Repeatable; name the file, not
                  its directory. For every run, use "persist" lines in the config.
+  --credential P allow the jail to use a host credential WITHOUT giving it the
+                 secret: it talks plain HTTP to a loopback broker, which attaches
+                 the real token and makes the TLS connection itself. "github" is
+                 the only provider so far; add " write" to permit push, which the
+                 default read-only policy refuses. Repeatable. For every run, use
+                 "credential <provider>" lines in the config.
   --rollback     snapshot the writable $HOME roots either side of the run and
                  let writes land FOR REAL, so destruction becomes a diff to
                  review rather than a loss. An alternative to the default

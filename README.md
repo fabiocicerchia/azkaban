@@ -223,6 +223,12 @@ azkaban [flags] [--] <command> [args...]
                  must keep across runs (a login token) without --persist making
                  the whole allowlist destroyable. Repeatable; name the file, not
                  its directory. For every run, use "persist" lines in the config.
+  --credential P allow the jail to use a host credential WITHOUT giving it the
+                 secret: it talks plain HTTP to a loopback broker, which attaches
+                 the real token and makes the TLS connection itself. "github" is
+                 the only provider so far; add " write" to permit push, which the
+                 default read-only policy refuses. Repeatable. For every run, use
+                 "credential <provider>" lines in the config.
   --rollback     snapshot the writable $HOME roots either side of the run and
                  let writes land FOR REAL, so destruction becomes a diff to
                  review rather than a loss. An alternative to the default

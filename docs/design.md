@@ -157,6 +157,56 @@ Details in [containers.md](containers.md).
 
 ---
 
+## Credential brokering
+
+azkaban's credential model was hide or hand over. `docs/configuration.md`
+concedes the consequence directly: for `gh pr create` you would have to hand the
+jail a token via `env GH_TOKEN`, which **is** stealable.
+
+```
+# ~/.config/azkaban/config
+credential github          # clone and fetch
+credential github write    # ...and push
+```
+
+The jail is pointed at a loopback endpoint over **plain HTTP**; the broker
+attaches the real credential and makes the TLS connection upstream itself. The
+token never exists inside the jail — not in the environment, not on the
+filesystem, not in argv.
+
+The plain-HTTP hop is the design, not a shortcut. A broker has to *see* the
+request to attach a header, so the jail must not be speaking TLS to it — which
+is exactly why this is a separate thing from the egress proxy, whose whole
+promise is that it relays a CONNECT tunnel without looking inside. Doing both in
+one component would have meant shipping a CA into the jail, and no CA is ever
+shipped.
+
+**Scoped per route**, which is the entire reason to do this rather than set an
+environment variable: a token in the jail can do everything the token can do.
+The default GitHub policy allows ref discovery and `git-upload-pack` — clone and
+fetch — and refuses `git-receive-pack`. Push needs `credential github write`,
+and the refusal names that rather than leaving someone to conclude the broker is
+broken.
+
+Three smaller things that are load-bearing:
+
+- **The secret is resolved on the host, in the outer process, before the jail
+  exists.** Nothing after that point has to be trusted with it.
+- **The client's own `Authorization` is dropped, never forwarded.** A jail
+  cannot stack a second credential onto a brokered request.
+- **git is pointed at the broker with `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_0`,
+  not a config file.** `~/.gitconfig` is bound read-only, so there is nowhere to
+  write one — and an environment-only rewrite leaves nothing behind.
+
+Each run mints a session token the client must present, because the broker is on
+loopback and every process on the host shares it.
+
+**Not yet done:** the phantom-token pattern from the issue — letting the agent
+run `/login` inside the jail, keeping the real token outside, and handing the
+jail an opaque placeholder resolved only on declared routes. That would dissolve
+the `persist`-the-OAuth-token trade-off entirely, and it is a larger change than
+this.
+
 ## Rollback: destruction as a diff, not a loss
 
 The overlay cannot tell destruction from useful work, so it discards both.
