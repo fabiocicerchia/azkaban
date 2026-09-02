@@ -234,6 +234,15 @@ azkaban [flags] [--] <command> [args...]
                  review rather than a loss. An alternative to the default
                  throwaway overlay, not a layer on it. Review and undo with
                  "azkaban rollback show|restore".
+  --elevate      let a denied READ be approved on the terminal instead of ending
+                 the run. A seccomp supervisor in the outer process traps opens,
+                 asks you about any path outside the allowlist, and hands back a
+                 read-only descriptor it opened itself — so a grant is bounded by
+                 your own permissions and cannot exceed them. Landlock stays the
+                 floor: anything the supervisor does not answer is denied by the
+                 kernel as usual. Writes are never elevated. OFF by default, and
+                 rate-limited to 10 prompts/s so a tool in a loop cannot wear you
+                 down. Needs the landlock stage.
   --dry-run      print the bwrap command instead of running it
   --no-guidance  do not describe the jail to the tool inside it. By default
                  /run/azkaban holds a read-only policy.json, a README, a Claude

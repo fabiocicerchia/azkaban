@@ -227,6 +227,32 @@ func landlockStage(args []string) {
 		rules = append(rules, landlock.ConnectTCP(uint16(n)))
 	}
 
+	// Opt-in dynamic layer, and it goes on BEFORE Landlock deliberately: seccomp
+	// is evaluated at syscall entry, the LSM hooks Landlock installs are
+	// evaluated inside the syscall. So a supervisor that fails to answer, or
+	// answers wrongly, drops the syscall onto the static floor. See elevate.go.
+	//
+	// A failure here is fatal rather than a warning: --elevate asked for a
+	// supervisor, and a run that silently did not get one is the same class of
+	// silent no-op that --mem-max used to be.
+	if fd := os.Getenv(elevateFDEnv); fd != "" {
+		sock, err := strconv.Atoi(fd)
+		if err != nil {
+			fatal(2, "bad "+elevateFDEnv+": "+fd)
+		}
+		listener, err := installElevationFilter()
+		if err != nil {
+			fatal(1, "--elevate: "+err.Error())
+		}
+		if err := sendListener(sock, listener); err != nil {
+			fatal(1, "--elevate: could not hand the listener to the supervisor: "+err.Error())
+		}
+		// The supervisor holds the only copy from here on. Keeping ours would
+		// mean the jail could answer its own notifications.
+		syscall.Close(listener)
+		syscall.Close(sock)
+	}
+
 	cfg := landlock.V5.BestEffort()
 	restrict := cfg.RestrictPaths
 	if len(ports) > 0 {
@@ -296,6 +322,12 @@ func outer(argv []string) {
 	// ALTERNATIVE to the overlay, not a layer on it: rollback implies real
 	// writes, because there is nothing to review if they never happened.
 	fRollback := fs.Bool("rollback", false, "")
+	// A denial normally ends the run: Landlock is irreversible, so "the tool
+	// needed one path nobody listed" costs the whole session. --elevate puts a
+	// seccomp supervisor above the floor that can approve ONE READ, on the
+	// terminal, at the moment it is needed. Off by default and loudly so — it
+	// is a hole in a wall whose value is being solid. See elevate.go.
+	fElevate := fs.Bool("elevate", false, "")
 	// Per-run equivalents of the config file's "ro"/"rw" lines, for a path this
 	// one run needs and every future run should not. Repeatable; same $HOME-relative
 	// resolution, same bindSafe rejection, same un-masking power as the file.
@@ -324,6 +356,13 @@ func outer(argv []string) {
 	display, netIsolate, sshAgent := *fDisplay, *fNoNet, *fSSHAgent
 	keepEnv, dry, allowUserns, rawSock := *fKeepEnv, *fDry, *fAllowUserns, *fRawSock
 	noAudit, noGuidance, rollbackOn := *fNoAudit, *fNoGuidance, *fRollback
+	elevate := *fElevate
+	if elevate && !landlockOn {
+		// Without the floor underneath it, the supervisor is the only thing
+		// deciding, and a supervisor that has to be right every time is exactly
+		// the design this one avoids. Refused rather than degraded.
+		fatal(2, "--elevate needs landlock as its floor; not usable with --no-landlock")
+	}
 	if rollbackOn {
 		if *fPersist {
 			fatal(2, "--rollback already means real writes; --persist is redundant with it")
@@ -945,6 +984,12 @@ func outer(argv []string) {
 		}); len(ps) > 0 {
 			add("--setenv", "AZKABAN_LL_PORTS", strings.Join(ps, "\n"))
 		}
+		// fd 3 is the --args file; the socketpair end the inner stage sends its
+		// seccomp listener back on is the next one. Named through the same
+		// --setenv channel as the allowlists so --dry-run prints it.
+		if elevate {
+			add("--setenv", elevateFDEnv, strconv.Itoa(elevateSockFD))
+		}
 		inner = append([]string{selfInJail, "--landlock-exec", "--"}, cmd...)
 	} else {
 		inner = cmd
@@ -1016,6 +1061,7 @@ func outer(argv []string) {
 		"display":       display,
 		"ssh_agent":     sshAgent,
 		"gpu":           gpu,
+		"elevate":       elevate,
 		"mem_max":       memMax,
 		"socket":        socketKind,
 		"socket_raw":    rawSock,
@@ -1065,7 +1111,53 @@ func outer(argv []string) {
 			c.SysProcAttr = &syscall.SysProcAttr{UseCgroupFD: true, CgroupFD: int(fd.Fd())}
 		}
 	}
-	runErr := c.Run()
+
+	// The elevation supervisor, if it was asked for. The socketpair is created
+	// here so the child end can be inherited; the parent end stays in this
+	// process, which is the trusted half for the whole run.
+	var supervisor *elevator
+	var supSock, jailSock *os.File
+	if elevate {
+		pair, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
+		if err != nil {
+			fatal(1, "--elevate: socketpair: "+err.Error())
+		}
+		supSock = os.NewFile(uintptr(pair[0]), "azkaban-elevate")
+		jailSock = os.NewFile(uintptr(pair[1]), "azkaban-elevate-jail")
+		c.ExtraFiles = append(c.ExtraFiles, jailSock) // fd 4 in bwrap
+		defer supSock.Close()
+	}
+
+	if err := c.Start(); err != nil {
+		fatal(1, err.Error())
+	}
+	if elevate {
+		// Dropped as soon as the child has it. Holding a second copy would mean
+		// the read below never sees EOF, so a bwrap that did not pass the
+		// descriptor through would hang the run instead of degrading it.
+		jailSock.Close()
+		// Blocks until the inner stage has installed its filter. If the listener
+		// never arrives the run continues WITHOUT elevation rather than dying
+		// mid-session: the jail is already up and Landlock is already on, so the
+		// worst case is the behaviour azkaban had before this flag existed.
+		listener, err := recvListener(int(supSock.Fd()))
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "azkaban: --elevate: no supervisor for this run ("+err.Error()+")")
+		} else {
+			supervisor = newElevator(listener, slices.Concat(llRO, llRW, llROFiles, llRWFiles),
+				newTerminalApprover())
+			supervisor.audit = auditLog
+			go supervisor.serve()
+		}
+	}
+	runErr := c.Wait()
+	if supervisor != nil {
+		// Closed only now: the kernel turns every trapped syscall into ENOSYS
+		// once the last listener is gone, so an early close would break the jail
+		// rather than merely stop supervising it.
+		supervisor.close()
+		auditLog.event("elevation_summary", supervisor.stats())
+	}
 	// Taken before anything else, and on BOTH exit paths. A jail that exits
 	// non-zero is exactly the one that destroyed something — the incident in
 	// docs/design.md exited non-zero and had already deleted five months of
@@ -1660,6 +1752,15 @@ func usage() {
                  review rather than a loss. An alternative to the default
                  throwaway overlay, not a layer on it. Review and undo with
                  "azkaban rollback show|restore".
+  --elevate      let a denied READ be approved on the terminal instead of ending
+                 the run. A seccomp supervisor in the outer process traps opens,
+                 asks you about any path outside the allowlist, and hands back a
+                 read-only descriptor it opened itself — so a grant is bounded by
+                 your own permissions and cannot exceed them. Landlock stays the
+                 floor: anything the supervisor does not answer is denied by the
+                 kernel as usual. Writes are never elevated. OFF by default, and
+                 rate-limited to 10 prompts/s so a tool in a loop cannot wear you
+                 down. Needs the landlock stage.
   --dry-run      print the bwrap command instead of running it
   --no-guidance  do not describe the jail to the tool inside it. By default
                  /run/azkaban holds a read-only policy.json, a README, a Claude
@@ -1730,4 +1831,13 @@ func usage() {
 //      the key itself, permanently) and than --display, which grants the same
 //      oracle plus X11 and dbus. `ssh-add -c` on the host reduces it to one
 //      confirmation prompt per signature; there is no in-jail equivalent.
+//  11. --elevate lets a human hand the jail a read-only descriptor for a path
+//      outside the allowlist, one path at a time and only while a terminal is
+//      there to answer. It is bounded by your own filesystem permissions and
+//      by Landlock underneath it — the supervisor can only ADD a read it could
+//      perform anyway, never remove a denial the floor makes. The real vector
+//      is the human: a prompt storm is designed to be answered "no", and the
+//      rate limit exists because a tool that asks a thousand times is trying
+//      to be approved by fatigue. Writes are never elevated, so nothing here
+//      reaches vectors 2, 7 or 9.
 // --------------------------------------------------------------------------- //

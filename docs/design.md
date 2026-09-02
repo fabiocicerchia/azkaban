@@ -439,6 +439,78 @@ against the child that produced it; a jailed process can rewrite this file only
 if the state directory is bound writable, which it is not by default. Claiming
 tamper-evidence without the chain would be worse than the honest version.
 
+## Runtime capability elevation
+
+Landlock is applied once and cannot be relaxed. That is what makes it worth
+trusting, and it is also why every denial is terminal: the only recovery from
+*the tool needed one path nobody anticipated* is to kill the run, widen the
+allowlist and start over. For a long interactive session that is expensive
+enough that people pre-emptively widen the allowlist instead — which is the
+opposite of what the tool is for.
+
+`--elevate` adds a layer **above** the floor, off by default:
+
+```
+openat()  ──►  seccomp filter  ──►  supervisor (outer process, trusted)
+                                      │
+                    ┌─────────────────┼──────────────────┐
+                    ▼                 ▼                  ▼
+            in the allowlist?    approved on tty?    denied / no tty
+                    │                 │                  │
+              CONTINUE ──► Landlock   ADDFD(ro fd)      EPERM
+```
+
+Two properties make this a gate rather than a hole:
+
+- **Ordering.** seccomp is evaluated at syscall entry; the LSM hooks Landlock
+  installs are evaluated inside the syscall. So a supervisor that crashes,
+  answers wrongly or does not answer at all drops the syscall onto the static
+  floor. The floor catches the dynamic layer's failures, never the reverse.
+- **Bounded grant.** The supervisor opens the file itself, as you, under
+  ordinary Unix permissions. It cannot hand the jail anything you could not
+  already read.
+
+### `SECCOMP_USER_NOTIF_FLAG_CONTINUE` is never used to authorize
+
+Checking a path and then continuing the syscall is a textbook TOCTOU: the path
+is resolved twice and the second resolution is the one that counts. CONTINUE is
+used here for the opposite purpose — *"I am not elevating this, let the floor
+decide"* — for which it is exactly right, because the decision is then made by
+Landlock on the path the kernel itself resolves. Every actual grant goes through
+`SECCOMP_IOCTL_NOTIF_ADDFD`, where the descriptor the jail receives is one the
+supervisor opened and can name.
+
+### Deliberate narrowings
+
+| | why |
+| --- | --- |
+| **Reads only** | A supervisor-opened write descriptor would bypass the overlay as well as Landlock, so one mistyped path would write to the real file on the host — the exact accident this tool exists to prevent. A write intent is passed through to the floor, not refused and not granted. |
+| **`RESOLVE_NO_SYMLINKS`** | The path a human approved has to be the path that is opened. This costs the ability to approve a path that legitimately runs through a symlink, which is the right way round for a security prompt. |
+| **No `O_CREAT` / `O_TRUNC`** | The supervisor can only ever hand back something that already exists. |
+| **`/dev/tty`, not stdin** | stdin belongs to the tool in the jail. A prompt reading from it would eat the agent's input; one reading from a piped stdin would answer itself. With no tty, every request is denied and that is said once. |
+| **10 prompts/s, burst 5** | A tool in a loop can generate thousands of denied opens a second. A prompt storm is unusable, and it is also how you get a human to approve something by exhausting them. Over the limit is a denial, not a queue. |
+| **One decision per path** | Answered once, remembered for the run, bounded at 1024 paths. |
+| **A relative path against a real dirfd is not resolved** | Fetching another process's descriptor is a whole mechanism, and the case is almost always the project directory, which is in the allowlist already. It falls through to the floor. |
+
+Every decision lands in the run log as an `elevation` event, and the run ends
+with an `elevation_summary` counting grants, denials and pass-throughs. A
+dynamic layer whose decisions were not written down is not auditable, which is
+the one thing the static lists have going for them.
+
+### What it costs
+
+Every `openat` in the jail becomes a round trip to the supervisor, including the
+overwhelming majority that are inside the allowlist and get an immediate
+CONTINUE. That is two context switches per file open. It is why this is opt-in
+per run rather than a default, and why the flag is worth reaching for during the
+session where a path is missing rather than leaving on.
+
+If the listener never arrives — a kernel without user notification, WSL2, a
+bubblewrap that did not pass the descriptor through — the run continues
+**without** elevation and says so on stderr. The jail is already up and Landlock
+is already on at that point, so the worst case is the behaviour azkaban had
+before the flag existed.
+
 ## Asking the policy a question
 
 `--dry-run` prints the resolved bwrap command line, and that is the audit trail:
@@ -509,14 +581,21 @@ Two vectors are open by default:
 
 ### Deliberately not locked
 
-- **No seccomp filter.** `Seccomp: 0` inside the jail; the full syscall surface
-  is reachable. Measured rather than assumed — every escalation syscall usually
-  cited is already closed by other means: `perf_event_open` and `userfaultfd`
-  return EPERM, `mount` and `open_by_handle_at` need capabilities the empty
-  bounding set (`CapBnd: 0`) can never grant, and `ptrace` is confined to the
-  jail's own PID namespace. Against *accidents* it buys almost nothing anyway,
-  since `rm -rf` is `unlinkat()` and blocking that breaks the tool. Where it would
-  earn its keep is deliberate exploitation.
+- **No *blocking* seccomp filter.** By default `Seccomp: 0` inside the jail and
+  the full syscall surface is reachable. Measured rather than assumed — every
+  escalation syscall usually cited is already closed by other means:
+  `perf_event_open` and `userfaultfd` return EPERM, `mount` and
+  `open_by_handle_at` need capabilities the empty bounding set (`CapBnd: 0`) can
+  never grant, and `ptrace` is confined to the jail's own PID namespace. Against
+  *accidents* it buys almost nothing anyway, since `rm -rf` is `unlinkat()` and
+  blocking that breaks the tool. Where it would earn its keep is deliberate
+  exploitation.
+
+  `--elevate` installs a seccomp filter, and that reasoning is untouched by it:
+  it is a *mediating* filter, not a denying one. Its only two actions are
+  "continue the syscall so Landlock decides" and "hand back a descriptor a human
+  approved". It denies nothing that would otherwise have been allowed, and adds
+  no new denial to reason about. See [Runtime capability elevation](#runtime-capability-elevation).
 - **Egress filtering by host is a guardrail, not a boundary.** `net <host>` and
   `--net-host` put a CONNECT proxy in front of the jail's outbound TCP (see
   below), which is genuinely useful against a confused tool. It does not close
