@@ -265,6 +265,36 @@ func containerReason(body []byte, rootReal string) string {
 	if h == nil {
 		return ""
 	}
+	if reason := hostConfigReason(h); reason != "" {
+		return reason
+	}
+	for _, bind := range h.Binds {
+		if reason := bindReason(bind, rootReal); reason != "" {
+			return reason
+		}
+	}
+	for _, m := range h.Mounts {
+		if strings.EqualFold(m.Type, "bind") && !pathWithin(m.Source, rootReal) {
+			return "bind mount of host path outside the project dir: " + m.Source
+		}
+		// A `local`-driver volume with a `device` option is a host bind mount in
+		// disguise (`--mount type=volume,volume-opt=type=none,volume-opt=o=bind,
+		// volume-opt=device=/etc`). Docker performs it inline at container create
+		// WITHOUT a /volumes/create call, so volumeReason never sees it. Apply the
+		// same host-path check here, or a Type=volume mount smuggles /etc, /, ...
+		if vo := m.VolumeOptions; vo != nil && vo.DriverConfig != nil {
+			if reason := driverDeviceReason(vo.DriverConfig.Options, rootReal); reason != "" {
+				return reason
+			}
+		}
+	}
+	return ""
+}
+
+// hostConfigReason - Returns "" if the HostConfig asks for no privilege that
+// strips a confinement layer, else why it does. Split out because these need no
+// host path to be an escape: the daemon grants them outright.
+func hostConfigReason(h *containerHostConfig) string {
 	if h.Privileged {
 		return "--privileged is not allowed inside the jail"
 	}
@@ -297,26 +327,6 @@ func containerReason(body []byte, rootReal string) string {
 	} {
 		if escapesNamespace(ns.mode) {
 			return "--" + ns.flag + "=" + ns.mode + " is not allowed"
-		}
-	}
-	for _, bind := range h.Binds {
-		if reason := bindReason(bind, rootReal); reason != "" {
-			return reason
-		}
-	}
-	for _, m := range h.Mounts {
-		if strings.EqualFold(m.Type, "bind") && !pathWithin(m.Source, rootReal) {
-			return "bind mount of host path outside the project dir: " + m.Source
-		}
-		// A `local`-driver volume with a `device` option is a host bind mount in
-		// disguise (`--mount type=volume,volume-opt=type=none,volume-opt=o=bind,
-		// volume-opt=device=/etc`). Docker performs it inline at container create
-		// WITHOUT a /volumes/create call, so volumeReason never sees it. Apply the
-		// same host-path check here, or a Type=volume mount smuggles /etc, /, ...
-		if vo := m.VolumeOptions; vo != nil && vo.DriverConfig != nil {
-			if reason := driverDeviceReason(vo.DriverConfig.Options, rootReal); reason != "" {
-				return reason
-			}
 		}
 	}
 	return ""
