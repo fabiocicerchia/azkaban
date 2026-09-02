@@ -56,6 +56,10 @@ func whyCommand(argv []string) {
 	fHost := fs.String("host", "", "")
 	fPort := fs.Int("port", 0, "")
 	fJSON := fs.Bool("json", false, "")
+	// Answer from inside the jail, off the policy the outer stage wrote there.
+	// This is the variant that actually helps a confused agent: it is the one
+	// that can run at the moment the error happened.
+	fSelf := fs.Bool("self", false, "")
 	// The same flags the run would take, so the question can be "would this be
 	// allowed *if* I ran it that way" rather than only "is it allowed now".
 	fPersist := fs.Bool("persist", false, "")
@@ -79,19 +83,32 @@ func whyCommand(argv []string) {
 		fatal(2, "--op must be read or write, got "+*fOp)
 	}
 
-	home, _ := os.UserHomeDir()
-	cwd, _ := os.Getwd()
-	uc := loadUserBinds(home)
-	uc.ro = append(uc.ro, fRO...)
-	uc.rw = append(uc.rw, fRW...)
-	uc.persist = append(uc.persist, fPersistPath...)
-
 	var out []verdict
-	if *fPath != "" {
-		out = append(out, decide(*fPath, *fOp, home, cwd, uc, !*fPersist))
-	}
-	if *fHost != "" || *fPort != 0 {
-		out = append(out, decideNet(*fHost, *fPort, *fNoNet, *fNetPorts, !*fNoLandlock))
+	if *fSelf {
+		jp, err := loadSelfPolicy()
+		if err != nil {
+			fatal(1, err.Error())
+		}
+		if *fPath != "" {
+			out = append(out, decideSelf(*fPath, *fOp, jp))
+		}
+		if *fHost != "" || *fPort != 0 {
+			out = append(out, decideNet(*fHost, *fPort, jp.NetIsolate, jp.NetPorts, jp.Landlock))
+		}
+	} else {
+		home, _ := os.UserHomeDir()
+		cwd, _ := os.Getwd()
+		uc := loadUserBinds(home)
+		uc.ro = append(uc.ro, fRO...)
+		uc.rw = append(uc.rw, fRW...)
+		uc.persist = append(uc.persist, fPersistPath...)
+
+		if *fPath != "" {
+			out = append(out, decide(*fPath, *fOp, home, cwd, uc, !*fPersist))
+		}
+		if *fHost != "" || *fPort != 0 {
+			out = append(out, decideNet(*fHost, *fPort, *fNoNet, *fNetPorts, !*fNoLandlock))
+		}
 	}
 
 	if *fJSON {
@@ -388,6 +405,9 @@ func whyUsage() {
   --host HOST    the host to ask about
   --port N       the TCP port to ask about
   --json         machine-readable, for tooling and for an agent
+  --self         answer from INSIDE a jail, off the policy it carries. This is
+                 the variant that helps a confused agent: it runs at the moment
+                 the error happened. Outside a jail it says so.
 
   The run flags below change the answer, so you can ask "would this be allowed
   if I ran it that way": --persist, --no-net, --net-ports, --no-landlock,
@@ -399,4 +419,98 @@ func whyUsage() {
     azkaban why --port 443 --net-ports 443,80
     azkaban why --path ~/.config/gh --json
 `)
+}
+
+// --------------------------------------------------------------------------- //
+// --self: answering from inside the jail.
+//
+// The outer stage cannot answer this one. Its lists describe the host, and
+// inside the jail the only truth is what was actually bound — so `--self` reads
+// the policy file the outer stage wrote in, rather than re-deriving anything.
+//
+// The AZKABAN_LL_* allowlists are deliberately stripped before the target
+// execs, which is why this needs a file at all.
+// --------------------------------------------------------------------------- //
+
+// loadSelfPolicy reads the jail's own description.
+func loadSelfPolicy() (jailPolicy, error) {
+	path := os.Getenv("AZKABAN_POLICY")
+	if path == "" {
+		path = guidancePolicyPath
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.Getenv("AZKABAN_JAIL") == "" {
+			return jailPolicy{}, fmt.Errorf(
+				"--self answers from inside a jail, and this is not one. Drop --self to ask about the policy a jail would have")
+		}
+		return jailPolicy{}, fmt.Errorf(
+			"cannot read %s: %v. The jail was started with --no-guidance, so it carries no self-description", path, err)
+	}
+	var jp jailPolicy
+	if err := json.Unmarshal(data, &jp); err != nil {
+		return jailPolicy{}, fmt.Errorf("%s is not readable as a policy: %v", path, err)
+	}
+	return jp, nil
+}
+
+// decideSelf is decide() over the in-jail policy.
+//
+// Simpler than the outer version, and necessarily so: inside the jail the
+// layers have already been resolved into four flat lists of absolute paths, and
+// the mechanism that produced each is a fact rather than a derivation. The
+// longest match wins, because a mask sits under a writable parent.
+func decideSelf(path, op string, jp jailPolicy) verdict {
+	p := abs(path, jp.Home)
+	v := verdict{Query: p, Op: op}
+
+	kind, matched := "", ""
+	take := func(k string, entries []string) {
+		for _, e := range entries {
+			if under(p, e) && len(e) >= len(matched) {
+				kind, matched = k, e
+			}
+		}
+	}
+	// Application order again, and then longest-match: /home/you/.config is
+	// writable and /home/you/.config/gh inside it is not.
+	take("rw", jp.Writable)
+	take("ro", jp.ReadOnly)
+	take("persist", jp.Persisted)
+	take("mask", jp.Masked)
+	if jp.Project != "" && under(p, jp.Project) && len(jp.Project) >= len(matched) {
+		kind, matched = "project", jp.Project
+	}
+
+	yes, no := true, false
+	switch kind {
+	case "":
+		v.Decision, v.Mechanism, v.Rule = "absent", "not mounted", "default deny"
+		v.Detail = "this path is not in the jail at all. It may well exist on the host — that is not something you can reach from here, and creating it will not help"
+	case "project":
+		v.Decision, v.Mechanism, v.Rule, v.Survives = "allowed", "bound read-write", "the project directory", &yes
+		v.Detail = "the one place writes really persist"
+	case "mask":
+		v.Decision, v.Mechanism, v.Rule = "denied", "blanked out", matched
+		v.Detail = "a credential store, deliberately empty in here. Nothing you do will populate it"
+	case "ro":
+		v.Decision = allowIf(op == "read")
+		v.Mechanism, v.Rule = "bound read-only", matched
+		if op == "write" {
+			v.Detail = "read-only. This is the sandbox, not Unix permissions — chmod will not change it and sudo is inert here"
+		}
+	case "persist":
+		v.Decision, v.Mechanism, v.Rule, v.Survives = "allowed", "bound read-write", matched, &yes
+		v.Detail = "writes here outlive the jail"
+	case "rw":
+		v.Decision, v.Mechanism, v.Rule = "allowed", "bound read-write", matched
+		if jp.Overlay {
+			v.Survives = &no
+			v.Mechanism = "bound read-write, on a throwaway overlay"
+			v.Detail = "writes succeed and are discarded when the jail exits. That is intended; do not try to work around it"
+		} else {
+			v.Survives = &yes
+		}
+	}
+	return v
 }

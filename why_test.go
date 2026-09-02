@@ -2,7 +2,9 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -190,5 +192,182 @@ func TestWhyCoversMatchesTheEntryAndItsChildrenOnly(t *testing.T) {
 		if got := covers(tc.entry, tc.rel); got != tc.want {
 			t.Errorf("covers(%q, %q) = %v, want %v", tc.entry, tc.rel, got, tc.want)
 		}
+	}
+}
+
+// --- --self, and the policy the jail carries --------------------------------
+
+func selfPolicy() jailPolicy {
+	return jailPolicy{
+		Version: 1, Home: "/home/you", Project: "/home/you/proj",
+		Writable:  []string{"/home/you/.config", "/home/you/.cache"},
+		ReadOnly:  []string{"/home/you/.gitconfig"},
+		Persisted: []string{"/home/you/.claude/.credentials.json"},
+		Masked:    []string{"/home/you/.config/gh"},
+		Overlay:   true, Landlock: true, NetPorts: "443",
+	}
+}
+
+func TestSelfDistinguishesAbsentFromDenied(t *testing.T) {
+	// The distinction the whole file exists for. ~/.ssh was never mounted, so
+	// a read is ENOENT — and an agent told "denied" goes looking for a
+	// permission nobody can grant.
+	v := decideSelf("/home/you/.ssh/id_rsa", "read", selfPolicy())
+	if v.Decision != "absent" {
+		t.Fatalf("decision = %q, want absent (%+v)", v.Decision, v)
+	}
+	if !strings.Contains(v.Detail, "creating it will not help") {
+		t.Errorf("detail should tell the agent not to work around it: %q", v.Detail)
+	}
+}
+
+func TestSelfLongestMatchWinsSoAMaskBeatsItsWritableParent(t *testing.T) {
+	jp := selfPolicy()
+	if v := decideSelf("/home/you/.config/gh", "read", jp); v.Decision != "denied" {
+		t.Errorf(".config/gh = %q, want denied — the mask is deeper than the rw parent", v.Decision)
+	}
+	if v := decideSelf("/home/you/.config/other", "write", jp); v.Decision != "allowed" {
+		t.Errorf(".config/other = %q, want allowed", v.Decision)
+	}
+}
+
+func TestSelfSaysWhenAWriteWillBeDiscarded(t *testing.T) {
+	v := decideSelf("/home/you/.cache/thing", "write", selfPolicy())
+	if v.Decision != "allowed" {
+		t.Fatalf("decision = %q", v.Decision)
+	}
+	if v.Survives == nil || *v.Survives {
+		t.Error("an overlaid write must report that it does not survive")
+	}
+	// An agent that sees the write succeed and the file vanish will otherwise
+	// conclude something is broken and try again.
+	if !strings.Contains(v.Detail, "discarded") {
+		t.Errorf("detail = %q", v.Detail)
+	}
+}
+
+func TestSelfNamesTheProjectAsTheOnePlaceWritesPersist(t *testing.T) {
+	v := decideSelf("/home/you/proj/src/main.go", "write", selfPolicy())
+	if v.Decision != "allowed" || v.Survives == nil || !*v.Survives {
+		t.Fatalf("the project dir must be real and persistent: %+v", v)
+	}
+}
+
+func TestSelfTellsTheAgentChmodWillNotHelp(t *testing.T) {
+	v := decideSelf("/home/you/.gitconfig", "write", selfPolicy())
+	if v.Decision != "denied" {
+		t.Fatalf("decision = %q", v.Decision)
+	}
+	// sudo is present in the jail and inert under NoNewPrivs; without this the
+	// agent tries it.
+	if !strings.Contains(v.Detail, "sudo is inert") {
+		t.Errorf("detail = %q", v.Detail)
+	}
+}
+
+func TestSelfOutsideAJailSaysSoRatherThanGuessing(t *testing.T) {
+	t.Setenv("AZKABAN_JAIL", "")
+	t.Setenv("AZKABAN_POLICY", filepath.Join(t.TempDir(), "nope.json"))
+	_, err := loadSelfPolicy()
+	if err == nil {
+		t.Fatal("want an error outside a jail")
+	}
+	if !strings.Contains(err.Error(), "this is not one") {
+		t.Errorf("error = %q, want it to say this is not a jail", err)
+	}
+}
+
+func TestSelfInsideAJailWithNoPolicyBlamesNoGuidance(t *testing.T) {
+	t.Setenv("AZKABAN_JAIL", "1")
+	t.Setenv("AZKABAN_POLICY", filepath.Join(t.TempDir(), "nope.json"))
+	_, err := loadSelfPolicy()
+	if err == nil || !strings.Contains(err.Error(), "--no-guidance") {
+		t.Errorf("error = %v, want it to name --no-guidance", err)
+	}
+}
+
+func TestSelfPolicyRoundTripsThroughJSON(t *testing.T) {
+	// The outer stage writes it and the inner stage reads it; a field that
+	// does not survive that is a field the agent is answered wrongly from.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "policy.json")
+	if err := os.WriteFile(path, []byte(selfPolicy().json()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AZKABAN_JAIL", "1")
+	t.Setenv("AZKABAN_POLICY", path)
+
+	got, err := loadSelfPolicy()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(got.Writable, selfPolicy().Writable) ||
+		!slices.Equal(got.Masked, selfPolicy().Masked) ||
+		got.Overlay != true || got.NetPorts != "443" || got.Project != "/home/you/proj" {
+		t.Errorf("round trip lost something: %+v", got)
+	}
+}
+
+func TestGuidanceTextNamesAReachableCommand(t *testing.T) {
+	text := guidanceText(selfPolicy())
+	// Telling the agent to run `azkaban why` is useless if azkaban is not on
+	// its PATH, and whether it is depends on where the user installed it.
+	if !strings.Contains(text, guidanceBinPath+" why") {
+		t.Error("the README must name the absolute in-jail binary path")
+	}
+	for _, want := range []string{"not a deleted file", "sudo", "discarded", "/home/you/proj"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the README does not mention %q", want)
+		}
+	}
+}
+
+func TestPresentUnderSkipsWhatIsNotOnTheHost(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got := presentUnder(home, []string{".config", ".does-not-exist", ".config"})
+	// Naming a path the jail did not get would tell the agent it is available
+	// when it is not — the exact confusion this file removes. And the same
+	// entry twice must not appear twice.
+	if len(got) != 1 || got[0] != filepath.Join(home, ".config") {
+		t.Errorf("presentUnder = %v", got)
+	}
+}
+
+func TestDryRunShowsTheGuidanceBinds(t *testing.T) {
+	// A regression test for a real bug: the guidance binds were appended to the
+	// argument list *after* the bwrap command line had already been built from
+	// it, so they were silently dropped. Nothing failed — the jail just started
+	// without the file that tells the agent it is in one. Asserting against
+	// --dry-run is what catches that class, because --dry-run is the argument
+	// list.
+	cmd := exec.Command(azkabanBin, "--dry-run", "/bin/true")
+	cmd.Dir = t.TempDir()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("--dry-run failed: %v\n%s", err, out)
+	}
+	got := string(out)
+	for _, want := range []string{
+		guidancePolicyPath, guidanceReadmePath, guidanceBinPath,
+		guidanceDir + "/claude-hook.sh", "AZKABAN_JAIL",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("--dry-run does not bind %s", want)
+		}
+	}
+}
+
+func TestNoGuidanceLeavesThemOut(t *testing.T) {
+	cmd := exec.Command(azkabanBin, "--dry-run", "--no-guidance", "/bin/true")
+	cmd.Dir = t.TempDir()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("--dry-run failed: %v\n%s", err, out)
+	}
+	if strings.Contains(string(out), guidanceDir) {
+		t.Error("--no-guidance still bound the guidance directory")
 	}
 }

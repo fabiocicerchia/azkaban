@@ -157,6 +157,73 @@ Details in [containers.md](containers.md).
 
 ---
 
+## Telling the tool it is in a jail
+
+Inside the jail a denial is indistinguishable from an ordinary filesystem error.
+`~/.ssh` does not exist because it was never mounted; a write outside the
+allowlist is `EACCES` from Landlock; a blocked port is a connection failure.
+Nothing says a sandbox produced any of it.
+
+So an agent misdiagnoses. It retries with `sudo` (present, and inert under
+`NoNewPrivs`), decides the file was deleted, "fixes" a permission problem that
+does not exist, or invents a workaround. Wasted turns at best; at worst it
+reports a confident wrong root cause to the user.
+
+The jail now describes itself. Four things are bound **read-only** under
+`/run/azkaban`, for the same reason `~/.config/azkaban` is frozen — a file that
+says what the policy is must not be one the agent can rewrite:
+
+| | |
+| --- | --- |
+| `policy.json` | the resolved policy, machine-readable |
+| `README.md` | the same thing in the second person, for a model to read |
+| `claude-hook.sh` | a Claude Code `PostToolUse` hook |
+| `azkaban` | the binary itself |
+
+`AZKABAN_JAIL=1` and `AZKABAN_POLICY` are set in the environment, so "am I
+jailed?" costs no file read.
+
+The binary is bound in for a specific reason: telling an agent to run
+`azkaban why` is only useful if `azkaban` is on its `PATH`, and whether it is
+depends on where the user installed it. An absolute in-jail path removes the
+question, and it is what the README and the hook both name.
+
+`--no-guidance` leaves all of it out.
+
+### `azkaban why --self`
+
+This is the variant that actually helps, because it runs at the moment the
+error happened:
+
+```console
+$ /run/azkaban/azkaban why --path ~/.ssh/id_rsa --self
+/home/you/.ssh/id_rsa
+  ABSENT (read)
+  mechanism: not mounted
+  matched:   default deny
+  this path is not in the jail at all. It may well exist on the host — that is
+  not something you can reach from here, and creating it will not help
+```
+
+It reads the policy file rather than re-deriving anything. It has to: the outer
+stage's lists describe the *host*, and the `AZKABAN_LL_*` allowlists are
+deliberately stripped before the target execs. Resolution is longest-match over
+four flat lists, so a mask still beats its writable parent.
+
+Outside a jail, `--self` says so rather than guessing.
+
+### The hook
+
+`claude-hook.sh` fires on `PostToolUse` and adds context **only** when the call
+failed *and* the error shape is one the jail actually produces — `ENOENT`,
+`EACCES`, `Operation not permitted`, a refused connection. A hook that comments
+on every tool call is noise the model learns to ignore, and one that comments on
+ordinary bugs makes the model reason worse about them.
+
+It reads the jail's own policy rather than restating it, so it stays correct
+when the allowlist changes. A paragraph in someone's `CLAUDE.md` goes stale the
+first time anyone edits the config.
+
 ## What a run actually did
 
 `--dry-run` and `azkaban why` both answer in the future tense. Neither survives

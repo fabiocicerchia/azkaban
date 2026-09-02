@@ -216,6 +216,10 @@ azkaban [flags] [--] <command> [args...]
                  the whole allowlist destroyable. Repeatable; name the file, not
                  its directory. For every run, use "persist" lines in the config.
   --dry-run      print the bwrap command instead of running it
+  --no-guidance  do not describe the jail to the tool inside it. By default
+                 /run/azkaban holds a read-only policy.json, a README, a Claude
+                 Code PostToolUse hook and this binary, so a confused agent can
+                 run "azkaban why --self" instead of guessing at an error.
   --no-audit     do not record this run. Every run is otherwise written as JSONL
                  to $XDG_STATE_HOME/azkaban/audit/ — the resolved policy, the
                  mode flags, every degradation, every docker-filter decision and
@@ -250,6 +254,11 @@ $ azkaban why --path ~/.ssh/id_rsa
 — and calling that a denial sends people hunting for a permission nobody can
 grant. Add `--json` for tooling, or the run flags (`--persist`, `--net-ports`,
 `--ro`, ...) to ask what the answer *would* be.
+
+**`--self` answers from inside the jail**, off the read-only policy the jail
+carries at `/run/azkaban/`. That is the variant that helps a confused agent,
+because it runs at the moment the error happened — see
+[docs/design.md](docs/design.md#telling-the-tool-it-is-in-a-jail).
 
 More in [`docs/getting-started.md`](docs/getting-started.md).
 

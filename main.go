@@ -285,6 +285,9 @@ func outer(argv []string) {
 	// On by default: a log nobody enabled records nothing. --no-audit and an
 	// `audit off` line in the config are the two ways out.
 	fNoAudit := fs.Bool("no-audit", false, "")
+	// The jail describes itself to the tool inside it. Opt-out for a run where
+	// three extra read-only binds under /run are unwanted.
+	fNoGuidance := fs.Bool("no-guidance", false, "")
 	// Per-run equivalents of the config file's "ro"/"rw" lines, for a path this
 	// one run needs and every future run should not. Repeatable; same $HOME-relative
 	// resolution, same bindSafe rejection, same un-masking power as the file.
@@ -305,7 +308,7 @@ func outer(argv []string) {
 	gpu, overlay, landlockOn, rlimits := !*fNoGPU, !*fPersist, !*fNoLandlock, !*fNoRlimits
 	display, netIsolate, sshAgent := *fDisplay, *fNoNet, *fSSHAgent
 	keepEnv, dry, allowUserns, rawSock := *fKeepEnv, *fDry, *fAllowUserns, *fRawSock
-	noAudit := *fNoAudit
+	noAudit, noGuidance := *fNoAudit, *fNoGuidance
 	memMax, netPorts := *fMemMax, *fNetPorts
 	// No container socket is bound unless explicitly asked for. On-by-default
 	// meant every run exposed a full container API — the one interface the jail
@@ -809,6 +812,38 @@ func outer(argv []string) {
 		inner = cmd
 	}
 
+	// The jail's own description, bound read-only so the process it describes
+	// cannot rewrite it — the same reason ~/.config/azkaban is frozen.
+	if !noGuidance {
+		jp := jailPolicy{
+			Version: 1, Home: home, Project: cwd,
+			Writable:   presentUnder(home, slices.Concat(rwPaths, uc.rw)),
+			ReadOnly:   presentUnder(home, slices.Concat(roPaths, uc.ro, roFreeze)),
+			Persisted:  presentUnder(home, uc.persist),
+			Masked:     presentUnder(home, slices.Concat(maskPaths, uc.mask)),
+			Overlay:    overlay,
+			Landlock:   landlockOn,
+			NetIsolate: netIsolate,
+			NetPorts:   netPorts,
+			EnvNames:   envNames(slices.Concat(envKeep, uc.env)),
+		}
+		add("--ro-bind", tempWith("azkaban-policy-", jp.json()), guidancePolicyPath)
+		add("--ro-bind", tempWith("azkaban-readme-", guidanceText(jp)), guidanceReadmePath)
+		add("--ro-bind", tempWithMode("azkaban-hook-", claudeHook, 0o755), guidanceDir+"/claude-hook.sh")
+		// The binary itself, so the command the README tells the agent to run
+		// is one that certainly exists. Read-only, like everything else here.
+		if self, err := os.Executable(); err == nil {
+			if resolved, err := filepath.EvalSymlinks(self); err == nil {
+				self = resolved
+			}
+			add("--ro-bind", self, guidanceBinPath)
+		}
+		// A cheap, reliable "am I jailed?" that does not need a file read. Set
+		// after --clearenv, like every other --setenv here.
+		add("--setenv", "AZKABAN_JAIL", "1")
+		add("--setenv", "AZKABAN_POLICY", guidancePolicyPath)
+	}
+
 	full := append(append([]string{"/usr/bin/bwrap"}, a...), "--")
 	full = append(full, inner...)
 
@@ -1192,13 +1227,45 @@ func cleanupOnSignal() {
 // is fatal rather than degraded: every caller is building a file the jail is
 // about to have bound over a real one.
 func tempWith(prefix, content string) string {
+	return tempWithMode(prefix, content, 0)
+}
+
+// tempWithMode - tempWith, with an explicit mode. Only the Claude Code hook
+// needs one: it is a script the agent executes, and CreateTemp's 0600 is not
+// executable.
+func tempWithMode(prefix, content string, mode os.FileMode) string {
 	f, err := os.CreateTemp("/tmp", prefix)
 	if err != nil {
 		fatal(1, err.Error())
 	}
 	f.WriteString(content)
 	f.Close()
+	if mode != 0 {
+		if err := os.Chmod(f.Name(), mode); err != nil {
+			fatal(1, err.Error())
+		}
+	}
 	return tempTrack(f.Name())
+}
+
+// presentUnder - The $HOME-relative entries that actually exist on the host.
+//
+// The jail's self-description must list what it got, not what was asked for:
+// every bind loop skips an entry with no source, so naming one here would tell
+// the agent a path is available when it is not — which is the exact confusion
+// this file exists to remove.
+func presentUnder(home string, entries []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, rel := range entries {
+		p := resolve(home, rel)
+		if !exists(p) || seen[p] {
+			continue
+		}
+		seen[p] = true
+		out = append(out, p)
+	}
+	return out
 }
 
 // splitEnv - Reads one AZKABAN_LL_* allowlist. FieldsFunc drops empty fields,
@@ -1387,6 +1454,10 @@ func usage() {
                  the whole allowlist destroyable. Repeatable; name the file, not
                  its directory. For every run, use "persist" lines in the config.
   --dry-run      print the bwrap command instead of running it
+  --no-guidance  do not describe the jail to the tool inside it. By default
+                 /run/azkaban holds a read-only policy.json, a README, a Claude
+                 Code PostToolUse hook and this binary, so a confused agent can
+                 run "azkaban why --self" instead of guessing at an error.
   --no-audit     do not record this run. Every run is otherwise written as JSONL
                  to $XDG_STATE_HOME/azkaban/audit/ — the resolved policy, the
                  mode flags, every degradation, every docker-filter decision and
