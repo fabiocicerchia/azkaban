@@ -16,6 +16,9 @@ rw  /srv/shared-cache       # bind read-write (overlaid like the rest)
 persist .claude/.credentials.json   # writable AND not overlaid — survives exit
 env ANTHROPIC_API_KEY       # forward one host variable
 mask .config/mytool/token   # blank out a path azkaban does not know about
+net api.anthropic.com       # allow egress to one host (see design.md)
+credential github           # use a host token without giving the jail the secret
+audit off                   # stop recording runs (they are recorded by default)
 ```
 
 That file is **trusted input**, which is only safe because azkaban re-binds
@@ -126,14 +129,61 @@ you would rather a hostile tool could not read (or delete) past sessions.
 azkaban --ssh-agent claude
 ```
 
-It binds `$SSH_AUTH_SOCK` and `known_hosts` (read-only) and nothing else. The
-private keys never enter the jail — what crosses is a *signing oracle*, so an
-exfiltrated jail keeps nothing after it exits. While it runs, though, anything
-inside can authenticate as you to every host those keys open. `ssh-add -c` on
-the host reduces that to one confirmation prompt per signature.
+The private keys never enter the jail — what crosses is a *signing oracle*, so
+an exfiltrated jail keeps nothing after it exits.
+
+What crosses is also **not the real agent socket**. The jail is pointed at a
+filtering proxy in the outer process, which speaks the agent protocol and
+forwards exactly two requests:
+
+| message | | |
+| --- | --- | --- |
+| `SSH_AGENTC_REQUEST_IDENTITIES` | 11 | list the public keys — **forwarded** |
+| `SSH_AGENTC_SIGN_REQUEST` | 13 | sign this blob — **forwarded** |
+| `ADD_IDENTITY`, `REMOVE_IDENTITY`, `REMOVE_ALL_IDENTITIES`, `LOCK`, `UNLOCK`, extensions | 17-27 | **refused** |
+
+The refusals are the part that changed. With the socket bound raw, one
+`ssh-add -D` inside the jail removes every key you have loaded, and one
+`ssh-add -x` locks the agent your host shell is using. Neither is anything a
+build needs. The allowlist is by message type, so a message added to the
+protocol after this was written is refused rather than relayed.
+
+`--ssh-agent-confirm` adds a prompt on `/dev/tty` before every signature — the
+in-jail equivalent of `ssh-add -c`, which the host-side flag could not provide
+for a process inside the jail. `--ssh-agent-raw` restores the old unfiltered
+behaviour if you need it.
+
+What is left after all of that is the signature itself, which is the whole
+point of the flag: while the jail runs, anything inside can ask for one, and a
+signature authenticates as you to every host those keys open. The proxy narrows
+the grant; it does not remove it.
 
 Do not reach for `ro .ssh` instead. It is the same capability plus permanent
 key theft, and `--display` is the same oracle plus X11 and dbus.
+
+## Reaching one unix socket
+
+A unix socket used to be reachable only if its path happened to fall inside a
+bind, so "let this tool talk to Postgres" meant `--rw /tmp` and everything in
+it. `--unix-socket` grants the socket and nothing else:
+
+```bash
+azkaban --unix-socket /tmp/.s.PGSQL.5432 -- psql -h /tmp mydb
+azkaban --unix-socket-dir "$XDG_RUNTIME_DIR/myapp" -- ./run   # names generated at runtime
+```
+
+Both have `unix-socket` / `unix-socket-dir` lines in the config for the
+every-run form. The directory variant exists because tools generate socket
+names from a PID or a uid, so the name to grant is not knowable when the run
+starts; it is wider than the file form by exactly the contents of one
+directory, which is why both exist.
+
+This matters most under `--no-net`, where local IPC is the only channel left.
+
+**Connect and bind are not distinguished.** Landlock has no socket-path right,
+so the kernel cannot tell them apart here: a grant lets the jail *bind* a name
+as well as *connect* to one. If a daemon of yours treats an unexpected socket
+appearing at a path as a takeover, this flag does not stop that.
 
 `gh` is a separate problem: if `gh auth status` says `(keyring)`, the token
 lives behind the D-Bus secret service, which the jail does not bind — so `gh`
@@ -142,6 +192,56 @@ try the same keyring, and `ro .config/gh` is read-only besides). With
 `--ssh-agent` you do not need it for pushes; for `gh pr create` you would have
 to hand the jail a token via `env GH_TOKEN`, which *is* stealable — prefer
 opening the PR from the host.
+
+## Checking what a line actually did
+
+A config file that merges with built-in lists and run flags is exactly the kind
+of thing that is easy to get subtly wrong, and the failure is silent — a `mask`
+line that does nothing looks identical to one that works.
+
+`azkaban why` answers from the merged result:
+
+```console
+$ azkaban why --path ~/.config/gh --op read
+  DENIED (read)
+  mechanism: masked (empty tmpfs or empty file)
+  matched:   maskPaths .config/gh
+
+$ azkaban why --path ~/.config/gh --op read --ro .config/gh
+  ALLOWED (read)
+  matched:   rwPaths .config
+```
+
+The second is the documented un-masking opt-out, checked without editing the
+file first. Add `--json` for a machine, or for an agent trying to work out why a
+read failed.
+
+## The run record
+
+Every run writes one JSONL file to `$XDG_STATE_HOME/azkaban/audit/` unless you
+say otherwise: `--no-audit` for one run, `audit off` in the config for good.
+Only the literal word `off` disables it — a typo leaves the record on, which is
+the direction a mistake should fail in.
+
+It answers the question `--dry-run` cannot, because `--dry-run` is in the future
+tense: *what did that run actually have access to, and what did it do?* The
+resolved policy after the merge, the mode flags, the full bwrap command line,
+every degradation that would otherwise have scrolled off your terminal, every
+docker-filter decision, and the exit code. See
+[design.md](design.md#what-a-run-actually-did).
+
+Two things worth knowing before you point anything at those files:
+
+- **`env NAME` is recorded by name, never by value.** The record says this run
+  could see `ANTHROPIC_API_KEY`; it does not say what it was.
+- **Command lines are scrubbed.** `--token abc` and a bare high-entropy
+  argument both land as `<redacted>`. The heuristic errs towards redacting, so
+  an ordinary argument occasionally disappears — that is the intended trade.
+
+Nothing prunes the directory. One small file per run adds up on a machine that
+runs the jail all day; a `find … -mtime +30 -delete` in a timer is the whole
+answer, and inventing a retention policy inside the tool would be a second thing
+to configure.
 
 ## Credential masking
 

@@ -123,7 +123,18 @@ caps are per-*file*, so a loop creating many small files still fills the overlay
 `--mem-max 8G` is the real bound — cgroup v2 charges tmpfs pages to the group.
 It also sets `memory.swap.max=0`, without which the cap is advisory: with swap
 enabled, 256 MiB allocated fine under a 64 MiB cap because the kernel simply
-paged it out. azkaban warns and continues if no delegated cgroup tree exists.
+paged it out.
+
+**A `--mem-max` that cannot be enforced is refused, not warned about.** If there
+is no delegated cgroup v2 memory controller — common inside another container —
+the run stops. It used to warn and continue, which meant `azkaban --mem-max 8G`
+could run with no memory bound at all, having printed one line that scrolls
+away, on the flag this section calls the real bound. A cap that silently does
+nothing is worse than no cap, because the flag looks like it worked. Drop
+`--mem-max` to run without one deliberately.
+
+A run that did *not* ask for a cap still degrades to a warning: nobody asked for
+that one, and refusing it would break every run inside a container.
 
 It stays **opt-in** even though that leaves the overlay unbounded by default,
 because disabling swap is not a side effect to impose on every run: a workload
@@ -145,6 +156,407 @@ parse, sockets are opt-in and containerd is not offered at all.
 Details in [containers.md](containers.md).
 
 ---
+
+## Credential brokering
+
+azkaban's credential model was hide or hand over. `docs/configuration.md`
+concedes the consequence directly: for `gh pr create` you would have to hand the
+jail a token via `env GH_TOKEN`, which **is** stealable.
+
+```
+# ~/.config/azkaban/config
+credential github          # clone and fetch
+credential github write    # ...and push
+```
+
+The jail is pointed at a loopback endpoint over **plain HTTP**; the broker
+attaches the real credential and makes the TLS connection upstream itself. The
+token never exists inside the jail — not in the environment, not on the
+filesystem, not in argv.
+
+The plain-HTTP hop is the design, not a shortcut. A broker has to *see* the
+request to attach a header, so the jail must not be speaking TLS to it — which
+is exactly why this is a separate thing from the egress proxy, whose whole
+promise is that it relays a CONNECT tunnel without looking inside. Doing both in
+one component would have meant shipping a CA into the jail, and no CA is ever
+shipped.
+
+**Scoped per route**, which is the entire reason to do this rather than set an
+environment variable: a token in the jail can do everything the token can do.
+The default GitHub policy allows ref discovery and `git-upload-pack` — clone and
+fetch — and refuses `git-receive-pack`. Push needs `credential github write`,
+and the refusal names that rather than leaving someone to conclude the broker is
+broken.
+
+Three smaller things that are load-bearing:
+
+- **The secret is resolved on the host, in the outer process, before the jail
+  exists.** Nothing after that point has to be trusted with it.
+- **The client's own `Authorization` is dropped, never forwarded.** A jail
+  cannot stack a second credential onto a brokered request.
+- **git is pointed at the broker with `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_0`,
+  not a config file.** `~/.gitconfig` is bound read-only, so there is nowhere to
+  write one — and an environment-only rewrite leaves nothing behind.
+
+Each run mints a session token the client must present, because the broker is on
+loopback and every process on the host shares it.
+
+**Not yet done:** the phantom-token pattern from the issue — letting the agent
+run `/login` inside the jail, keeping the real token outside, and handing the
+jail an opaque placeholder resolved only on declared routes. That would dissolve
+the `persist`-the-OAuth-token trade-off entirely, and it is a larger change than
+this.
+
+## Rollback: destruction as a diff, not a loss
+
+The overlay cannot tell destruction from useful work, so it discards both.
+`--persist` is the only escape and it is all-or-nothing — this document already
+says there is no way to keep `~/.claude/projects` while `rm -rf ~/.claude` stays
+impossible. So shell history, caches and transcripts are lost as collateral on
+every default run, and the workaround costs the protection.
+
+`--rollback` answers the question the overlay cannot:
+
+```console
+$ azkaban --rollback claude
+azkaban: rollback: snapshotted 1284 file(s); writes this run are REAL
+...
+azkaban: rollback: 20260902T141500Z — 47 deleted, 3 modified.
+  Review: azkaban rollback show 20260902T141500Z
+
+$ azkaban rollback restore 20260902T141500Z .claude/projects
+  restored  /home/you/.claude/projects/a.jsonl
+  ...
+```
+
+For the incident this repo was written after — `rm -rf ~/.claude` against a real
+home — that is strictly better than discarding everything: the data was gone,
+and here it would have been a list to review.
+
+It is an **alternative** to the overlay, not a layer on it. Rollback implies
+real writes, because there is nothing to review if they never happened, and
+leaving the overlay on would snapshot a directory nothing writes to and report
+that the run changed nothing. A review screen that is always empty is worse than
+none.
+
+Design notes worth knowing:
+
+- **Content-addressable, keyed by SHA-256.** An unchanged file across twenty
+  runs costs one copy. That is what makes snapshotting before every run
+  affordable, and it has to be affordable or the flag stays off.
+- **The closing snapshot is taken on both exit paths.** A jail that exits
+  non-zero is exactly the one that destroyed something: the incident above
+  exited non-zero and had already deleted five months of data, which is what
+  `TestPersist_ExitCodeIsNotEvidence` pins. Snapshotting only on success would
+  miss every case that matters.
+- **`.git`, `node_modules`, `target` and friends are skipped**, and a root over
+  20,000 files is skipped whole and recorded as a degradation. git is its own
+  snapshot mechanism; the rest are regenerable.
+- **Symlinks are recorded by name, never followed.** Following one would pull an
+  untracked tree into the snapshot, and restoring through it would write outside
+  the root.
+- **Restore verifies the hash before writing.** A corrupted object restored
+  silently is the one failure that would make this actively harmful.
+- **Additions are listed but never undone.** Putting one back means deleting it,
+  and that is the operator's call.
+
+`azkaban rollback cleanup [N]` keeps the newest N sessions and then sweeps any
+stored content nothing refers to — in that order, because sweeping first would
+leave a session restorable in name only.
+
+## Egress filtering by host
+
+`--net-ports` restricts outbound TCP *ports* at the kernel. That closes
+localhost services and LAN scanning and cannot express "only
+api.anthropic.com" — which is the rule people actually want, and the reason
+credential masking is weaker than it reads: masking stops a token being
+destroyed, and does nothing to stop one being read and sent somewhere.
+
+```sh
+azkaban --net-host api.anthropic.com --net-host '*.githubusercontent.com' claude
+```
+
+```
+# ~/.config/azkaban/config — the every-run form
+net api.anthropic.com
+net *.githubusercontent.com
+```
+
+A CONNECT proxy runs in the outer process, `HTTPS_PROXY` points the jail at it,
+and **`--net-ports` is narrowed to the proxy's port**. That last part is what
+makes it a filter rather than a suggestion: a client that ignores the proxy
+variables gets `EPERM` from Landlock instead of a direct connection. It
+therefore requires the Landlock stage, and refuses to start without it rather
+than pretending to filter.
+
+Three choices are the difference between a filter and the appearance of one:
+
+- **No TLS interception.** The CONNECT target is checked and raw bytes are
+  relayed. Shipping a CA into the jail would buy L7 visibility at the cost of a
+  much larger security surface, and the threat model here is accidental
+  destruction rather than a determined attacker. (OpenShell and OpenSandbox both
+  do intercept; nono does not, for this reason.)
+- **DNS is resolved in the proxy, and the addresses are checked before the
+  dial.** An allowed hostname whose A record points at `169.254.169.254` is a
+  complete bypass otherwise — that address hands out instance credentials to
+  anything that asks. Loopback, link-local, private and non-unicast are all
+  refused with the reason.
+- **The dial goes to the resolved address, not to the name again.** Resolving
+  twice leaves a window that a short-TTL rebinding record is built to fit
+  through.
+
+The proxy listens on loopback, which every process on the host shares, so each
+run mints a 256-bit token and requires it in `Proxy-Authorization`. Without
+that, any other local process could use this jail's allowlist.
+
+Wildcards cover subdomains and **not** the bare domain: `*.example.com` allows
+`api.example.com` and not `example.com`. Conflating the two is how an allowlist
+quietly widens, and someone writing the first has not made the second decision.
+
+Plain HTTP through the proxy is refused rather than forwarded. Forwarding it
+would mean this process reading and relaying cleartext bodies on the jail's
+behalf — a much larger thing to get right than a tunnel, and everything worth
+allowing speaks TLS.
+
+`--dry-run` discloses the whole arrangement, with a placeholder port and no live
+token: it starts no listener, and the port is allocated at run time.
+
+## Telling the tool it is in a jail
+
+Inside the jail a denial is indistinguishable from an ordinary filesystem error.
+`~/.ssh` does not exist because it was never mounted; a write outside the
+allowlist is `EACCES` from Landlock; a blocked port is a connection failure.
+Nothing says a sandbox produced any of it.
+
+So an agent misdiagnoses. It retries with `sudo` (present, and inert under
+`NoNewPrivs`), decides the file was deleted, "fixes" a permission problem that
+does not exist, or invents a workaround. Wasted turns at best; at worst it
+reports a confident wrong root cause to the user.
+
+The jail now describes itself. Four things are bound **read-only** under
+`/run/azkaban`, for the same reason `~/.config/azkaban` is frozen — a file that
+says what the policy is must not be one the agent can rewrite:
+
+| | |
+| --- | --- |
+| `policy.json` | the resolved policy, machine-readable |
+| `README.md` | the same thing in the second person, for a model to read |
+| `claude-hook.sh` | a Claude Code `PostToolUse` hook |
+| `azkaban` | the binary itself |
+
+`AZKABAN_JAIL=1` and `AZKABAN_POLICY` are set in the environment, so "am I
+jailed?" costs no file read.
+
+The binary is bound in for a specific reason: telling an agent to run
+`azkaban why` is only useful if `azkaban` is on its `PATH`, and whether it is
+depends on where the user installed it. An absolute in-jail path removes the
+question, and it is what the README and the hook both name.
+
+`--no-guidance` leaves all of it out.
+
+### `azkaban why --self`
+
+This is the variant that actually helps, because it runs at the moment the
+error happened:
+
+```console
+$ /run/azkaban/azkaban why --path ~/.ssh/id_rsa --self
+/home/you/.ssh/id_rsa
+  ABSENT (read)
+  mechanism: not mounted
+  matched:   default deny
+  this path is not in the jail at all. It may well exist on the host — that is
+  not something you can reach from here, and creating it will not help
+```
+
+It reads the policy file rather than re-deriving anything. It has to: the outer
+stage's lists describe the *host*, and the `AZKABAN_LL_*` allowlists are
+deliberately stripped before the target execs. Resolution is longest-match over
+four flat lists, so a mask still beats its writable parent.
+
+Outside a jail, `--self` says so rather than guessing.
+
+### The hook
+
+`claude-hook.sh` fires on `PostToolUse` and adds context **only** when the call
+failed *and* the error shape is one the jail actually produces — `ENOENT`,
+`EACCES`, `Operation not permitted`, a refused connection. A hook that comments
+on every tool call is noise the model learns to ignore, and one that comments on
+ordinary bugs makes the model reason worse about them.
+
+It reads the jail's own policy rather than restating it, so it stays correct
+when the allowlist changes. A paragraph in someone's `CLAUDE.md` goes stale the
+first time anyone edits the config.
+
+## What a run actually did
+
+`--dry-run` and `azkaban why` both answer in the future tense. Neither survives
+the run. Every degradation warning and every docker-filter denial went to stderr
+and scrolled away with the terminal — which is exactly where you are looking
+once something has already gone wrong.
+
+So every run writes one JSONL file to `$XDG_STATE_HOME/azkaban/audit/`:
+
+```console
+$ jq -c . ~/.local/state/azkaban/audit/20260902T141500Z-4821.jsonl
+{"t":"...","event":"start","argv":["claude"],"cwd":"/home/you/proj","pid":4821}
+{"t":"...","event":"degraded","what":"tiocsti-permissive","detail":"this kernel allows TIOCSTI; ..."}
+{"t":"...","event":"policy","rw":[".cache",".claude",...],"mask":[".config/gh",...],"env_forwarded":["HOME","PATH","ANTHROPIC_API_KEY"],"landlock":{"rw":["/tmp","/home/you/proj"],...}}
+{"t":"...","event":"mode","overlay":true,"landlock":true,"no_net":false,"socket":"docker","bwrap_command":"/usr/bin/bwrap --clearenv ..."}
+{"t":"...","event":"docker","decision":"denied","method":"POST","path":"/v1.45/containers/create","reason":"bind mount of / is refused"}
+{"t":"...","event":"exit","code":0,"duration_ms":183422}
+```
+
+**On by default**, because a log nobody enabled records nothing. `--no-audit`
+for one run, `audit off` in the config for good. `--dry-run` records nothing —
+it changes nothing, and recording it would fill the directory with runs that
+never happened.
+
+Four things it is deliberately careful about:
+
+- **The `degraded` events are the point.** Every one of them was a single stderr
+  line: no `--tmp-overlay`, a rootful docker socket, an ignored `persist`, a
+  TIOCSTI-permissive kernel, an unavailable cgroup. They are what you go looking
+  for afterwards, and they are exactly what scrolls away.
+- **Allowed docker calls are recorded, denials are recorded *and* printed.**
+  Printing every permitted API call would drown the denials that matter; not
+  recording them leaves "what did this jail do with the socket" unanswerable.
+- **Credentials are scrubbed on the way in**, not stored and hoped about.
+  `--token abc` and a bare high-entropy argument both become `<redacted>`. It
+  errs towards redacting: a record that hides a harmless argument is an
+  annoyance, and the other mistake is a credential on disk.
+- **Forwarded environment variables are recorded by name only.** `env NAME` is
+  how an API key reaches the jail; "this run could see that variable" is the
+  useful half, and the value is the half that must never be in a file.
+
+The policy is recorded *after* the merge and after every entry with no source on
+the host has been skipped — what the jail got, not what was asked for — and the
+full bwrap command line goes in alongside it, so the record is a superset of
+what `--dry-run` would have printed.
+
+Not hash-chained, not signed. That is what you add once the log is evidence
+against the child that produced it; a jailed process can rewrite this file only
+if the state directory is bound writable, which it is not by default. Claiming
+tamper-evidence without the chain would be worse than the honest version.
+
+## Runtime capability elevation
+
+Landlock is applied once and cannot be relaxed. That is what makes it worth
+trusting, and it is also why every denial is terminal: the only recovery from
+*the tool needed one path nobody anticipated* is to kill the run, widen the
+allowlist and start over. For a long interactive session that is expensive
+enough that people pre-emptively widen the allowlist instead — which is the
+opposite of what the tool is for.
+
+`--elevate` adds a layer **above** the floor, off by default:
+
+```
+openat()  ──►  seccomp filter  ──►  supervisor (outer process, trusted)
+                                      │
+                    ┌─────────────────┼──────────────────┐
+                    ▼                 ▼                  ▼
+            in the allowlist?    approved on tty?    denied / no tty
+                    │                 │                  │
+              CONTINUE ──► Landlock   ADDFD(ro fd)      EPERM
+```
+
+Two properties make this a gate rather than a hole:
+
+- **Ordering.** seccomp is evaluated at syscall entry; the LSM hooks Landlock
+  installs are evaluated inside the syscall. So a supervisor that crashes,
+  answers wrongly or does not answer at all drops the syscall onto the static
+  floor. The floor catches the dynamic layer's failures, never the reverse.
+- **Bounded grant.** The supervisor opens the file itself, as you, under
+  ordinary Unix permissions. It cannot hand the jail anything you could not
+  already read.
+
+### `SECCOMP_USER_NOTIF_FLAG_CONTINUE` is never used to authorize
+
+Checking a path and then continuing the syscall is a textbook TOCTOU: the path
+is resolved twice and the second resolution is the one that counts. CONTINUE is
+used here for the opposite purpose — *"I am not elevating this, let the floor
+decide"* — for which it is exactly right, because the decision is then made by
+Landlock on the path the kernel itself resolves. Every actual grant goes through
+`SECCOMP_IOCTL_NOTIF_ADDFD`, where the descriptor the jail receives is one the
+supervisor opened and can name.
+
+### Deliberate narrowings
+
+| | why |
+| --- | --- |
+| **Reads only** | A supervisor-opened write descriptor would bypass the overlay as well as Landlock, so one mistyped path would write to the real file on the host — the exact accident this tool exists to prevent. A write intent is passed through to the floor, not refused and not granted. |
+| **`RESOLVE_NO_SYMLINKS`** | The path a human approved has to be the path that is opened. This costs the ability to approve a path that legitimately runs through a symlink, which is the right way round for a security prompt. |
+| **No `O_CREAT` / `O_TRUNC`** | The supervisor can only ever hand back something that already exists. |
+| **`/dev/tty`, not stdin** | stdin belongs to the tool in the jail. A prompt reading from it would eat the agent's input; one reading from a piped stdin would answer itself. With no tty, every request is denied and that is said once. |
+| **10 prompts/s, burst 5** | A tool in a loop can generate thousands of denied opens a second. A prompt storm is unusable, and it is also how you get a human to approve something by exhausting them. Over the limit is a denial, not a queue. |
+| **One decision per path** | Answered once, remembered for the run, bounded at 1024 paths. |
+| **A relative path against a real dirfd is not resolved** | Fetching another process's descriptor is a whole mechanism, and the case is almost always the project directory, which is in the allowlist already. It falls through to the floor. |
+
+Every decision lands in the run log as an `elevation` event, and the run ends
+with an `elevation_summary` counting grants, denials and pass-throughs. A
+dynamic layer whose decisions were not written down is not auditable, which is
+the one thing the static lists have going for them.
+
+### What it costs
+
+Every `openat` in the jail becomes a round trip to the supervisor, including the
+overwhelming majority that are inside the allowlist and get an immediate
+CONTINUE. That is two context switches per file open. It is why this is opt-in
+per run rather than a default, and why the flag is worth reaching for during the
+session where a path is missing rather than leaving on.
+
+If the listener never arrives — a kernel without user notification, WSL2, a
+bubblewrap that did not pass the descriptor through — the run continues
+**without** elevation and says so on stderr. The jail is already up and Landlock
+is already on at that point, so the worst case is the behaviour azkaban had
+before the flag existed.
+
+## Asking the policy a question
+
+`--dry-run` prints the resolved bwrap command line, and that is the audit trail:
+accurate, complete, copy-pasteable. It is also an answer to *what is the whole
+policy*, not to *what about this path*.
+
+`azkaban why` is the second question:
+
+```console
+$ azkaban why --path ~/.claude --op write
+/home/you/.claude
+  ALLOWED (write)
+  mechanism: --overlay-src + --tmp-overlay (throwaway tmpfs upper layer)
+  matched:   rwPaths .claude
+  survives:  no — discarded when the jail exits
+
+$ azkaban why --path ~/.ssh/id_rsa
+/home/you/.ssh/id_rsa
+  ABSENT (read)
+  mechanism: --tmpfs /home/you
+  matched:   default deny
+```
+
+The distinction in that second answer is the one worth having. `~/.ssh` was
+never mounted, so a read fails as `ENOENT` — reporting it as *denied* would send
+someone hunting for a permission nobody can grant.
+
+It answers from the same lists the bind loops use, walked in the same order, so
+the layer it reports is the layer that would end up on top: ro binds, then rw
+(overlaid by default), then `persist`, then `roFreeze`, then masks, last wins.
+It starts no jail and reads nothing but the config.
+
+The run flags are accepted as *simulation*, so the question can be "would this
+be allowed if I ran it that way": `--persist`, `--no-net`, `--net-ports`,
+`--no-landlock`, `--ro`, `--rw`, `--persist-path`. `--json` makes it consumable
+by tooling, and by an agent that has just hit an error it cannot interpret.
+
+On hosts it gives the honest answer rather than a comforting one: `--net-ports`
+is a port allowlist enforced by Landlock and cannot express a hostname, so a
+`--host` question says so instead of implying a filter that does not exist.
+
+**Not implemented: `--self`.** Answering from *inside* the jail is the variant
+that would actually help a confused agent, but the Landlock allowlists arrive as
+`AZKABAN_LL_*` and are deliberately stripped before the target command execs.
+Keeping them, or writing a policy file into the jail, is a change to what the
+jail contains — it belongs with the in-jail guidance work, not here.
 
 ## Security model
 
@@ -169,17 +581,27 @@ Two vectors are open by default:
 
 ### Deliberately not locked
 
-- **No seccomp filter.** `Seccomp: 0` inside the jail; the full syscall surface
-  is reachable. Measured rather than assumed — every escalation syscall usually
-  cited is already closed by other means: `perf_event_open` and `userfaultfd`
-  return EPERM, `mount` and `open_by_handle_at` need capabilities the empty
-  bounding set (`CapBnd: 0`) can never grant, and `ptrace` is confined to the
-  jail's own PID namespace. Against *accidents* it buys almost nothing anyway,
-  since `rm -rf` is `unlinkat()` and blocking that breaks the tool. Where it would
-  earn its keep is deliberate exploitation.
-- **No network egress filtering by host or domain.** `--net-ports` restricts
-  outbound TCP *ports* at the kernel, which closes localhost services and LAN
-  scanning, but it cannot express "only api.anthropic.com".
+- **No *blocking* seccomp filter.** By default `Seccomp: 0` inside the jail and
+  the full syscall surface is reachable. Measured rather than assumed — every
+  escalation syscall usually cited is already closed by other means:
+  `perf_event_open` and `userfaultfd` return EPERM, `mount` and
+  `open_by_handle_at` need capabilities the empty bounding set (`CapBnd: 0`) can
+  never grant, and `ptrace` is confined to the jail's own PID namespace. Against
+  *accidents* it buys almost nothing anyway, since `rm -rf` is `unlinkat()` and
+  blocking that breaks the tool. Where it would earn its keep is deliberate
+  exploitation.
+
+  `--elevate` installs a seccomp filter, and that reasoning is untouched by it:
+  it is a *mediating* filter, not a denying one. Its only two actions are
+  "continue the syscall so Landlock decides" and "hand back a descriptor a human
+  approved". It denies nothing that would otherwise have been allowed, and adds
+  no new denial to reason about. See [Runtime capability elevation](#runtime-capability-elevation).
+- **Egress filtering by host is a guardrail, not a boundary.** `net <host>` and
+  `--net-host` put a CONNECT proxy in front of the jail's outbound TCP (see
+  below), which is genuinely useful against a confused tool. It does not close
+  UDP, so DNS remains a usable covert channel out of the jail, and a client
+  speaking raw TCP to the proxy port is bounded by the port number and nothing
+  else. Against a determined process inside the jail it buys little.
 - **Same uid, no capability drop.** `CapEff` is already empty for a normal user;
   the tool runs as you, which is exactly why "as your user" is the boundary the
   docker proxy has to defend.

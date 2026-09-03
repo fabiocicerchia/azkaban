@@ -138,12 +138,12 @@ func destructiveReason(r *http.Request) string {
 func dockerFilterHandler(proxy http.Handler, rootReal string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if reason := destructiveReason(r); reason != "" {
-			fmt.Fprintln(os.Stderr, "azkaban: docker filter DENIED "+r.URL.Path+": "+reason)
+			dockerDecision(r, "denied", reason)
 			denyJSON(w, reason)
 			return
 		}
 		if root := apiRoot(r.URL.Path); !allowedRoots[root] {
-			fmt.Fprintln(os.Stderr, "azkaban: docker filter DENIED "+r.URL.Path+": endpoint not in allowlist")
+			dockerDecision(r, "denied", "endpoint not in allowlist")
 			denyJSON(w, "the /"+root+" API is not reachable from inside the jail")
 			return
 		}
@@ -155,14 +155,37 @@ func dockerFilterHandler(proxy http.Handler, rootReal string) http.Handler {
 				return
 			}
 			if reason := filterReason(r.URL.Path, body, rootReal); reason != "" {
-				fmt.Fprintln(os.Stderr, "azkaban: docker filter DENIED "+r.URL.Path+": "+reason)
+				dockerDecision(r, "denied", reason)
 				denyJSON(w, reason)
 				return
 			}
 			r.Body = io.NopCloser(bytes.NewReader(body))
 			r.ContentLength = int64(len(body))
 		}
+		// Allowed calls are recorded too, and only in the run record. Printing
+		// every permitted API call to stderr would drown the denials that
+		// matter; not recording them at all leaves "what did this jail actually
+		// do with the socket" unanswerable, which is the question the record
+		// exists for.
+		dockerDecision(r, "allowed", "")
 		proxy.ServeHTTP(w, r)
+	})
+}
+
+// dockerDecision - Records one filter verdict, and prints the denials.
+//
+// A denial goes to stderr as well because a silently filtered API call looks
+// like a docker bug, and the person seeing it is usually mid-command. An
+// allowed call goes only to the record.
+func dockerDecision(r *http.Request, decision, reason string) {
+	if decision == "denied" {
+		fmt.Fprintln(os.Stderr, "azkaban: docker filter DENIED "+r.URL.Path+": "+reason)
+	}
+	auditLog.event("docker", map[string]any{
+		"decision": decision,
+		"method":   r.Method,
+		"path":     r.URL.Path,
+		"reason":   reason,
 	})
 }
 

@@ -41,6 +41,7 @@ import (
 
 	"github.com/landlock-lsm/go-landlock/landlock"
 	"golang.org/x/sys/unix"
+	"time"
 )
 
 // --------------------------------------------------------------------------- //
@@ -185,6 +186,16 @@ func main() {
 		landlockStage(os.Args[2:]) // runs inside bwrap
 		return
 	}
+	// A query over the resolved policy, not a run. Kept a subcommand rather
+	// than a flag because it takes its own argument set and starts no jail.
+	if len(os.Args) > 1 && os.Args[1] == "why" {
+		whyCommand(os.Args[2:])
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "rollback" {
+		rollbackCommand(os.Args[2:])
+		return
+	}
 	outer(os.Args[1:])
 }
 
@@ -241,6 +252,32 @@ func landlockStage(args []string) {
 		rules = append(rules, landlock.ConnectTCP(uint16(n)))
 	}
 
+	// Opt-in dynamic layer, and it goes on BEFORE Landlock deliberately: seccomp
+	// is evaluated at syscall entry, the LSM hooks Landlock installs are
+	// evaluated inside the syscall. So a supervisor that fails to answer, or
+	// answers wrongly, drops the syscall onto the static floor. See elevate.go.
+	//
+	// A failure here is fatal rather than a warning: --elevate asked for a
+	// supervisor, and a run that silently did not get one is the same class of
+	// silent no-op that --mem-max used to be.
+	if fd := os.Getenv(elevateFDEnv); fd != "" {
+		sock, err := strconv.Atoi(fd)
+		if err != nil {
+			fatal(2, "bad "+elevateFDEnv+": "+fd)
+		}
+		listener, err := installElevationFilter()
+		if err != nil {
+			fatal(1, "--elevate: "+err.Error())
+		}
+		if err := sendListener(sock, listener); err != nil {
+			fatal(1, "--elevate: could not hand the listener to the supervisor: "+err.Error())
+		}
+		// The supervisor holds the only copy from here on. Keeping ours would
+		// mean the jail could answer its own notifications.
+		syscall.Close(listener)
+		syscall.Close(sock)
+	}
+
 	cfg := landlock.V5.BestEffort()
 	restrict := cfg.RestrictPaths
 	if len(ports) > 0 {
@@ -295,6 +332,27 @@ type jailOpts struct {
 	socketKind string
 	// Per-run additions to the config file's ro/rw/persist lists.
 	ro, rw, persist []string
+
+	// noAudit, noGuidance and rollback control what the run leaves behind: the
+	// JSON run record, the note telling the agent it is jailed, and the
+	// reviewable snapshot of what it changed.
+	noAudit, noGuidance, rollback bool
+	// elevate runs the seccomp supervisor, which can hand the jail a read-only
+	// descriptor for a path outside the bind list after a prompt.
+	elevate bool
+	// sshAgentRaw binds the real agent socket; sshAgentConfirm puts the
+	// filtering proxy in front of it and asks before each signature.
+	sshAgentRaw, sshAgentConfirm bool
+	// Extra sockets and socket directories to bind, and the egress allowlist
+	// and broker ports the network filter enforces.
+	unixSocket, unixSocketDir []string
+	egressHosts, brokerPorts  []string
+	// Per-run additions to the config file's net/credential lists.
+	netHost, credential []string
+	// persistAll is --persist as asked for. `overlay` cannot stand in for it:
+	// --rollback clears the overlay too, and the run record has to say which of
+	// the two turned it off.
+	persistAll bool
 }
 
 // parseFlags - Turns argv into the settings above plus the command to run.
@@ -320,13 +378,46 @@ func parseFlags(argv []string) (o jailOpts, cmd []string, done bool) {
 	fNetPorts := fs.String("net-ports", "", "")
 	fDisplay := fs.Bool("display", false, "")
 	fSSHAgent := fs.Bool("ssh-agent", false, "")
+	// The agent grant, narrowed. By default --ssh-agent now goes through a
+	// filtering proxy that forwards only "list keys" and "sign this"; these two
+	// widen it back or narrow it further. See sshagentproxy.go.
+	fSSHAgentRaw := fs.Bool("ssh-agent-raw", false, "")
+	fSSHAgentConfirm := fs.Bool("ssh-agent-confirm", false, "")
+	// One unix socket, bound as a file. The alternative was `--rw /tmp`, which
+	// grants the socket and everything around it. Repeatable.
+	var fUnixSocket, fUnixSocketDir stringList
+	fs.Var(&fUnixSocket, "unix-socket", "")
+	fs.Var(&fUnixSocketDir, "unix-socket-dir", "")
 	fNoNet := fs.Bool("no-net", false, "")
 	fNoLandlock := fs.Bool("no-landlock", false, "")
 	fKeepEnv := fs.Bool("keep-env", false, "")
 	fDry := fs.Bool("dry-run", false, "")
+	// On by default: a log nobody enabled records nothing. --no-audit and an
+	// `audit off` line in the config are the two ways out.
+	fNoAudit := fs.Bool("no-audit", false, "")
+	// The jail describes itself to the tool inside it. Opt-out for a run where
+	// three extra read-only binds under /run are unwanted.
+	fNoGuidance := fs.Bool("no-guidance", false, "")
+	// Snapshot either side of the run instead of discarding writes. An
+	// ALTERNATIVE to the overlay, not a layer on it: rollback implies real
+	// writes, because there is nothing to review if they never happened.
+	fRollback := fs.Bool("rollback", false, "")
+	// A denial normally ends the run: Landlock is irreversible, so "the tool
+	// needed one path nobody listed" costs the whole session. --elevate puts a
+	// seccomp supervisor above the floor that can approve ONE READ, on the
+	// terminal, at the moment it is needed. Off by default and loudly so — it
+	// is a hole in a wall whose value is being solid. See elevate.go.
+	fElevate := fs.Bool("elevate", false, "")
 	// Per-run equivalents of the config file's "ro"/"rw" lines, for a path this
 	// one run needs and every future run should not. Repeatable; same $HOME-relative
 	// resolution, same bindSafe rejection, same un-masking power as the file.
+	// Repeatable host allowlist for the egress proxy. Same file-and-flag pairing
+	// as ro/rw: `net <host>` in the config is the every-run form.
+	var fNetHost, fCredential stringList
+	fs.Var(&fNetHost, "net-host", "")
+	// `credential github` / `credential github write`. Same file-and-flag
+	// pairing as everything else.
+	fs.Var(&fCredential, "credential", "")
 	var fRO, fRW, fPersistPath stringList
 	fs.Var(&fRO, "ro", "")
 	fs.Var(&fRW, "rw", "")
@@ -346,6 +437,35 @@ func parseFlags(argv []string) (o jailOpts, cmd []string, done bool) {
 	o.keepEnv, o.dry, o.allowUserns, o.rawSock = *fKeepEnv, *fDry, *fAllowUserns, *fRawSock
 	o.memMax, o.netPorts = *fMemMax, *fNetPorts
 	o.ro, o.rw, o.persist = fRO, fRW, fPersistPath
+	o.noAudit, o.noGuidance, o.rollback = *fNoAudit, *fNoGuidance, *fRollback
+	o.elevate = *fElevate
+	o.sshAgentRaw, o.sshAgentConfirm = *fSSHAgentRaw, *fSSHAgentConfirm
+	o.unixSocket, o.unixSocketDir = fUnixSocket, fUnixSocketDir
+	o.netHost, o.credential = fNetHost, fCredential
+	o.persistAll = *fPersist
+	if (o.sshAgentRaw || o.sshAgentConfirm) && !o.sshAgent {
+		fatal(2, "--ssh-agent-raw/--ssh-agent-confirm say HOW to forward the agent; pair with --ssh-agent")
+	}
+	if o.sshAgentRaw && o.sshAgentConfirm {
+		// The raw socket is the real agent: there is nothing in the path that
+		// could stop to ask. Refused rather than silently ignoring one of them.
+		fatal(2, "--ssh-agent-raw binds the real agent socket; nothing is left to confirm with")
+	}
+	if o.elevate && !o.landlockOn {
+		// Without the floor underneath it, the supervisor is the only thing
+		// deciding, and a supervisor that has to be right every time is exactly
+		// the design this one avoids. Refused rather than degraded.
+		fatal(2, "--elevate needs landlock as its floor; not usable with --no-landlock")
+	}
+	if o.rollback {
+		if *fPersist {
+			fatal(2, "--rollback already means real writes; --persist is redundant with it")
+		}
+		// The overlay is what rollback replaces. Leaving it on would snapshot a
+		// directory nothing ever writes to, and report that the run changed
+		// nothing — a review screen that is always empty is worse than none.
+		o.overlay = false
+	}
 	// No container socket is bound unless explicitly asked for. On-by-default
 	// meant every run exposed a full container API — the one interface the jail
 	// cannot police from the inside.
@@ -380,6 +500,7 @@ func parseFlags(argv []string) (o jailOpts, cmd []string, done bool) {
 // here; --dry-run prints the result instead of executing it, which is what
 // makes the decision auditable.
 func outer(argv []string) {
+	var agentProxy *sshAgentProxy
 	o, cmd, done := parseFlags(argv)
 	if done {
 		return
@@ -406,6 +527,20 @@ func outer(argv []string) {
 	uc.ro = append(uc.ro, o.ro...)
 	uc.rw = append(uc.rw, o.rw...)
 	uc.persist = append(uc.persist, o.persist...)
+	uc.net = append(uc.net, o.netHost...)
+	uc.credential = append(uc.credential, o.credential...)
+
+	// --dry-run changes nothing, so there is nothing to record; recording it
+	// would fill the directory with runs that never happened.
+	auditLog = startAudit(!o.noAudit && !uc.auditOff && !o.dry, time.Now())
+	defer auditLog.close(0)
+	auditLog.event("start", map[string]any{
+		"argv":    redactArgv(os.Args[1:]),
+		"command": redactArgv(cmd),
+		"cwd":     cwd,
+		"home":    home,
+		"pid":     os.Getpid(),
+	})
 
 	// Patched /etc/hosts and /etc/resolv.conf. /run is tmpfs'd (empty) inside
 	// the jail, which breaks the usual resolv.conf -> /run/.../stub-resolv.conf
@@ -547,14 +682,14 @@ func outer(argv []string) {
 				strings.Join(containerSockets[o.socketKind], ", ")+
 				"). containerd is not offered: it speaks gRPC, which the filtering proxy cannot inspect.")
 		case realSock == "/var/run/docker.sock" || realSock == "/run/podman/podman.sock":
-			fmt.Fprintln(os.Stderr, "azkaban: WARNING: no rootless "+o.socketKind+
+			auditLog.degraded("rootful-container-socket", "no rootless "+o.socketKind+
 				"; using ROOTFUL "+realSock+" = host root inside the jail. Set up a rootless daemon to close this.")
 		}
 
 		sockForJail := realSock // path bound FROM the host
 		switch {
 		case o.rawSock:
-			fmt.Fprintln(os.Stderr, "azkaban: WARNING: --unfiltered-container-socket binds the UNFILTERED socket; `docker run -v /:/h` can read/write everything your user owns.")
+			auditLog.degraded("unfiltered-container-socket", "--unfiltered-container-socket binds the UNFILTERED socket; `docker run -v /:/h` can read/write everything your user owns.")
 		case !o.dry:
 			ps, err := startDockerFilterProxy(realSock, cwd)
 			if err != nil {
@@ -630,7 +765,7 @@ func outer(argv []string) {
 	// --persist turns it off for the runs where writes are meant to survive.
 	// Note the project dir is NEVER overlaid; it is the workspace, and it has git.
 	if o.overlay && !bwrapHas("--tmp-overlay") {
-		fmt.Fprintln(os.Stderr, "azkaban: WARNING: this bwrap has no --tmp-overlay; falling back to real writes. Upgrade bubblewrap (>= 0.9) or pass --persist to silence this.")
+		auditLog.degraded("no-tmp-overlay", "this bwrap has no --tmp-overlay; falling back to real writes. Upgrade bubblewrap (>= 0.9) or pass --persist to silence this.")
 		o.overlay = false
 	}
 	for _, rel := range slices.Concat(rwPaths, uc.rw) {
@@ -681,7 +816,7 @@ func outer(argv []string) {
 			// Loud, because silence is the failure this whole feature exists to
 			// fix: a persist line that does nothing looks exactly like one that
 			// works until the token is gone.
-			fmt.Fprintln(os.Stderr, "azkaban: WARNING: persist "+rel+" ignored: no such path on the host. "+
+			auditLog.degraded("persist-ignored", "persist "+rel+" ignored: no such path on the host. "+
 				"A bind needs an existing source — create it outside the jail first.")
 			continue
 		}
@@ -743,6 +878,29 @@ func outer(argv []string) {
 		case !exists(sock):
 			fatal(1, "--ssh-agent: no socket at "+sock)
 		}
+		// Default since the filtering proxy exists: the jail talks to a proxy in
+		// the outer process, which forwards only "list keys" and "sign this" and
+		// refuses add/remove/lock. --ssh-agent-raw is the old behaviour, where
+		// the real socket is bound and anything inside can also DELETE the keys
+		// you loaded or lock your host agent. See sshagentproxy.go.
+		if !o.sshAgentRaw && !o.dry {
+			// /tmp, like the args file and every other outer-stage temp: the
+			// XDG runtime dir is tmpfs'd inside the jail and is where --display
+			// already has too much living.
+			proxyDir, err := os.MkdirTemp("/tmp", "azkaban-ssh-")
+			if err != nil {
+				fatal(1, "--ssh-agent: "+err.Error())
+			}
+			tempTrack(proxyDir)
+			ap, err := newSSHAgentProxy(sock, proxyDir, o.sshAgentConfirm)
+			if err != nil {
+				fatal(1, "--ssh-agent: "+err.Error())
+			}
+			agentProxy = ap
+			tempTrack(ap.path)
+			go ap.serve()
+			sock = ap.path
+		}
 		a.add("--bind", sock, sock)
 		a.add("--setenv", "SSH_AUTH_SOCK", sock)
 		llRWFiles = append(llRWFiles, sock)
@@ -754,6 +912,47 @@ func outer(argv []string) {
 			a.add("--ro-bind", kh, kh)
 			llROFiles = append(llROFiles, kh)
 		}
+	}
+
+	// AF_UNIX grants. A unix socket was previously reachable only if its path
+	// happened to fall inside a bind, so "let this tool reach Postgres at
+	// /tmp/.s.PGSQL.5432" meant granting /tmp and everything in it. This binds
+	// the socket and nothing else. Sharpest under --no-net, where local IPC is
+	// the only channel left.
+	//
+	// LIMIT, stated rather than implied: connect and bind are NOT distinguished.
+	// Landlock has no socket-path right, so the kernel cannot tell them apart
+	// here; a grant lets the jail bind a name as well as connect to one. Doing
+	// better means a seccomp filter on bind(2), which elevate.go now makes
+	// possible and nobody has asked for.
+	for _, s := range slices.Concat(o.unixSocket, uc.unixSocket) {
+		p := resolve(home, s)
+		if !bindSafe(home, p) {
+			fatal(2, "--unix-socket: refusing "+p)
+		}
+		if !exists(p) {
+			// A socket that is not there yet is almost always a daemon that is
+			// not running, and binding a missing path would create a directory
+			// the jail then finds empty and confusing.
+			fatal(1, "--unix-socket: no socket at "+p)
+		}
+		a.add("--bind", p, p)
+		llRWFiles = append(llRWFiles, p)
+	}
+	// The directory form exists because tools generate socket names at runtime
+	// — PID-suffixed paths, $TMPDIR/tsx-$UID/.pipe — so the name to grant is not
+	// knowable when the run starts. Wider than the file form by exactly the
+	// contents of one directory, which is why both exist.
+	for _, s := range slices.Concat(o.unixSocketDir, uc.unixSocketDir) {
+		p := resolve(home, s)
+		if !bindSafe(home, p) {
+			fatal(2, "--unix-socket-dir: refusing "+p)
+		}
+		if !isDir(p) {
+			fatal(1, "--unix-socket-dir: not a directory: "+p)
+		}
+		a.add("--bind", p, p)
+		llRW = append(llRW, p)
 	}
 
 	// Project working dir: writable, and made the cwd.
@@ -821,6 +1020,117 @@ func outer(argv []string) {
 	}
 	a.add("--setenv", "PS1", `(jail) \w \$ `)
 
+	// The "before" snapshot, taken while the host is still untouched. Under
+	// --rollback the overlay is off, so from here on the run's writes are real.
+	var rbSession *rollbackSession
+	if o.rollback && !o.dry {
+		roots := presentUnder(home, slices.Concat(rwPaths, uc.rw))
+		start := time.Now().UTC()
+		before, err := takeSnapshot(roots, rollbackStore())
+		if err != nil {
+			fatal(1, "rollback snapshot: "+err.Error())
+		}
+		for _, skipped := range before.Skipped {
+			auditLog.degraded("rollback-skipped", "not snapshotted: "+skipped+
+				"; changes there cannot be rolled back")
+		}
+		rbSession = &rollbackSession{
+			ID: start.Format("20060102T150405Z"), Cmd: cmd, Cwd: cwd,
+			Start: start, Before: before,
+		}
+		fmt.Fprintf(os.Stderr, "azkaban: rollback: snapshotted %d file(s); writes this run are REAL\n",
+			len(before.Entries))
+	}
+
+	// Credential brokering. Resolved on the HOST, here, before the jail exists:
+	// that is the whole mechanism, and nothing after this point has to be
+	// trusted with the secret.
+	for _, directive := range uc.credential {
+		name, write, err := parseCredentialDirective(directive)
+		if err != nil {
+			fatal(2, "credential: "+err.Error())
+		}
+		if o.dry {
+			// No listener and no secret read in a dry run, but the policy is
+			// still disclosed — --dry-run is the audit trail.
+			a.add("--setenv", "AZKABAN_CREDENTIAL_"+strings.ToUpper(name), "<brokered at 127.0.0.1:<port>>")
+			continue
+		}
+		b, err := startCredentialBroker(name, write)
+		if err != nil {
+			fatal(1, "credential broker: "+err.Error())
+		}
+		for k, v := range b.JailEnv() {
+			a.add("--setenv", k, v)
+		}
+		// The broker is on loopback, so it needs the same port exemption the
+		// egress proxy does. Appended rather than replacing: a run can broker a
+		// credential and filter egress at once.
+		o.brokerPorts = append(o.brokerPorts, strconv.Itoa(b.Port))
+		mode := "read-only"
+		if write {
+			mode = "read-write"
+		}
+		fmt.Fprintf(os.Stderr, "azkaban: brokering the %s credential (%s); the token never enters the jail\n",
+			name, mode)
+	}
+
+	// Egress filtering. This must come BEFORE the inner command is assembled:
+	// that is where netPorts is turned into AZKABAN_LL_PORTS, and narrowing it
+	// afterwards would be a no-op that looks like a working filter.
+	//
+	// Narrowing --net-ports to the proxy's port is what makes this a filter
+	// rather than a suggestion: a client that ignores HTTP_PROXY gets EPERM
+	// from Landlock instead of a direct connection.
+	if len(uc.net) > 0 {
+		if !o.landlockOn {
+			fatal(2, "net host filtering needs the landlock stage: without it nothing stops a client "+
+				"ignoring HTTP_PROXY and connecting directly, and the allowlist would be decoration")
+		}
+		if o.netIsolate {
+			fatal(2, "--no-net and a net host allowlist are contradictory: --no-net already denies everything")
+		}
+		// --dry-run is the documented audit trail, so it has to disclose this
+		// policy too — but with no listener and no live credential. The port is
+		// allocated at run time, so neither can be a real value here.
+		ep := &egressProxy{Addr: "127.0.0.1:<port>", Token: "<per-run token>"}
+		if !o.dry {
+			var err error
+			if ep, err = startEgressProxy(uc.net); err != nil {
+				fatal(1, "egress proxy: "+err.Error())
+			}
+		}
+		proxyURL := "http://azkaban:" + ep.Token + "@" + ep.Addr
+		for _, k := range []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"} {
+			a.add("--setenv", k, proxyURL)
+		}
+		// Loopback and the unix socket dir have to stay reachable or the child
+		// cannot talk to the proxy at all.
+		a.add("--setenv", "NO_PROXY", "localhost,127.0.0.1")
+		a.add("--setenv", "no_proxy", "localhost,127.0.0.1")
+		// This REPLACES any --net-ports the caller gave: the whole point is that
+		// the proxy port is the only way out.
+		o.netPorts = strconv.Itoa(ep.Port)
+		if o.dry {
+			o.netPorts = "<proxy port>"
+		}
+		o.egressHosts = uc.net
+	}
+
+	// Broker ports join the ConnectTCP allowlist. Done after the egress block so
+	// that narrowing to the proxy does not lock the jail out of its own broker.
+	if len(o.brokerPorts) > 0 {
+		if o.netPorts == "" && !o.netIsolate {
+			// No port policy at all: the broker needs no exemption because
+			// nothing is being restricted.
+			o.brokerPorts = nil
+		} else {
+			o.netPorts = strings.Join(append(strings.FieldsFunc(o.netPorts, func(r rune) bool {
+				return r == ',' || unicode.IsSpace(r)
+			}), o.brokerPorts...), ",")
+		}
+	}
+
 	// Assemble the inner command.
 	var inner []string
 	if o.landlockOn {
@@ -842,13 +1152,91 @@ func outer(argv []string) {
 		}); len(ps) > 0 {
 			a.add("--setenv", llEnvPorts, strings.Join(ps, "\n"))
 		}
+		// fd 3 is the --args file; the socketpair end the inner stage sends its
+		// seccomp listener back on is the next one. Named through the same
+		// --setenv channel as the allowlists so --dry-run prints it.
+		if o.elevate {
+			a.add("--setenv", elevateFDEnv, strconv.Itoa(elevateSockFD))
+		}
 		inner = append([]string{selfInJail, landlockExecFlag, "--"}, cmd...)
 	} else {
 		inner = cmd
 	}
 
+	// The jail's own description, bound read-only so the process it describes
+	// cannot rewrite it — the same reason ~/.config/azkaban is frozen.
+	if !o.noGuidance {
+		jp := jailPolicy{
+			Version: 1, Home: home, Project: cwd,
+			Writable:   presentUnder(home, slices.Concat(rwPaths, uc.rw)),
+			ReadOnly:   presentUnder(home, slices.Concat(roPaths, uc.ro, roFreeze)),
+			Persisted:  presentUnder(home, uc.persist),
+			Masked:     presentUnder(home, slices.Concat(maskPaths, uc.mask)),
+			Overlay:    o.overlay,
+			Landlock:   o.landlockOn,
+			NetIsolate: o.netIsolate,
+			NetPorts:   o.netPorts,
+			NetHosts:   o.egressHosts,
+			EnvNames:   envNames(slices.Concat(envKeep, uc.env)),
+		}
+		a.add("--ro-bind", tempWith("azkaban-policy-", jp.json()), guidancePolicyPath)
+		a.add("--ro-bind", tempWith("azkaban-readme-", guidanceText(jp)), guidanceReadmePath)
+		a.add("--ro-bind", tempWithMode("azkaban-hook-", claudeHook, 0o755), guidanceDir+"/claude-hook.sh")
+		// The binary itself, so the command the README tells the agent to run
+		// is one that certainly exists. Read-only, like everything else here.
+		if self, err := os.Executable(); err == nil {
+			if resolved, err := filepath.EvalSymlinks(self); err == nil {
+				self = resolved
+			}
+			a.add("--ro-bind", self, guidanceBinPath)
+		}
+		// A cheap, reliable "am I jailed?" that does not need a file read. Set
+		// after --clearenv, like every other --setenv here.
+		a.add("--setenv", "AZKABAN_JAIL", "1")
+		a.add("--setenv", "AZKABAN_POLICY", guidancePolicyPath)
+	}
+
 	full := append(append([]string{bwrapBin}, a...), "--")
 	full = append(full, inner...)
+
+	// Recorded here rather than at parse time: this is the point where every
+	// list has been merged, every entry that had no source on the host has been
+	// skipped, and the Landlock allowlists are final. Anything earlier would
+	// record what was asked for rather than what the jail got.
+	auditLog.event("policy", map[string]any{
+		"ro":      slices.Concat(roPaths, uc.ro),
+		"rw":      slices.Concat(rwPaths, uc.rw),
+		"persist": uc.persist,
+		"mask":    slices.Concat(maskPaths, uc.mask),
+		"freeze":  roFreeze,
+		// Names only, never values: `env NAME` is how an API key reaches the
+		// jail, and the useful half is "this run could see that variable".
+		"env_forwarded": envNames(slices.Concat(envKeep, uc.env)),
+		"landlock": map[string]any{
+			"ro": llRO, "ro_files": llROFiles, "rw": llRW, "rw_files": llRWFiles,
+			"ports": o.netPorts,
+		},
+	})
+	auditLog.event("mode", map[string]any{
+		"overlay":           o.overlay,
+		"persist":           o.persistAll,
+		"landlock":          o.landlockOn,
+		"rlimits":           o.rlimits,
+		"allow_userns":      o.allowUserns,
+		"keep_env":          o.keepEnv,
+		"no_net":            o.netIsolate,
+		"net_ports":         o.netPorts,
+		"display":           o.display,
+		"ssh_agent":         o.sshAgent,
+		"ssh_agent_raw":     o.sshAgentRaw,
+		"ssh_agent_confirm": o.sshAgentConfirm,
+		"gpu":               o.gpu,
+		"elevate":           o.elevate,
+		"mem_max":           o.memMax,
+		"socket":            o.socketKind,
+		"socket_raw":        o.rawSock,
+		"bwrap_command":     shquote(full),
+	})
 
 	if o.dry {
 		fmt.Println(shquote(full))
@@ -893,13 +1281,112 @@ func outer(argv []string) {
 			c.SysProcAttr = &syscall.SysProcAttr{UseCgroupFD: true, CgroupFD: int(fd.Fd())}
 		}
 	}
-	if err := c.Run(); err != nil {
-		if ee, ok := err.(*exec.ExitError); ok {
-			tempCleanup() // os.Exit does not run defers
-			os.Exit(ee.ExitCode())
+
+	// The elevation supervisor, if it was asked for. The socketpair is created
+	// here so the child end can be inherited; the parent end stays in this
+	// process, which is the trusted half for the whole run.
+	var supervisor *elevator
+	var supSock, jailSock *os.File
+	if o.elevate {
+		pair, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
+		if err != nil {
+			fatal(1, "--elevate: socketpair: "+err.Error())
 		}
+		supSock = os.NewFile(uintptr(pair[0]), "azkaban-elevate")
+		jailSock = os.NewFile(uintptr(pair[1]), "azkaban-elevate-jail")
+		c.ExtraFiles = append(c.ExtraFiles, jailSock) // fd 4 in bwrap
+		defer supSock.Close()
+	}
+
+	if err := c.Start(); err != nil {
 		fatal(1, err.Error())
 	}
+	if o.elevate {
+		// Dropped as soon as the child has it. Holding a second copy would mean
+		// the read below never sees EOF, so a bwrap that did not pass the
+		// descriptor through would hang the run instead of degrading it.
+		jailSock.Close()
+		// Blocks until the inner stage has installed its filter. If the listener
+		// never arrives the run continues WITHOUT elevation rather than dying
+		// mid-session: the jail is already up and Landlock is already on, so the
+		// worst case is the behaviour azkaban had before this flag existed.
+		listener, err := recvListener(int(supSock.Fd()))
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "azkaban: --elevate: no supervisor for this run ("+err.Error()+")")
+		} else {
+			supervisor = newElevator(listener, slices.Concat(llRO, llRW, llROFiles, llRWFiles),
+				newTerminalApprover())
+			supervisor.audit = auditLog
+			go supervisor.serve()
+		}
+	}
+	runErr := c.Wait()
+	if agentProxy != nil {
+		agentProxy.close()
+		auditLog.event("ssh_agent", agentProxy.stats())
+	}
+	if supervisor != nil {
+		// Closed only now: the kernel turns every trapped syscall into ENOSYS
+		// once the last listener is gone, so an early close would break the jail
+		// rather than merely stop supervising it.
+		supervisor.close()
+		auditLog.event("elevation_summary", supervisor.stats())
+	}
+	// Taken before anything else, and on BOTH exit paths. A jail that exits
+	// non-zero is exactly the one that destroyed something — the incident in
+	// docs/design.md exited non-zero and had already deleted five months of
+	// data. Snapshotting only on success would miss every case that matters.
+	finishRollback(rbSession)
+	if runErr != nil {
+		if ee, ok := runErr.(*exec.ExitError); ok {
+			// os.Exit runs no defers, so the record has to be closed by hand
+			// here — an unclosed log is one missing its exit line, which is the
+			// line that says whether the run finished.
+			auditLog.close(ee.ExitCode())
+			tempCleanup()
+			os.Exit(ee.ExitCode())
+		}
+		fatal(1, runErr.Error())
+	}
+}
+
+// finishRollback takes the closing snapshot and reports what changed.
+func finishRollback(s *rollbackSession) {
+	if s == nil {
+		return
+	}
+	after, err := takeSnapshot(s.Before.Roots, rollbackStore())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "azkaban: rollback: closing snapshot failed ("+err.Error()+
+			"); the run is recorded but not reviewable")
+		return
+	}
+	s.After, s.End = after, time.Now().UTC()
+	if err := s.save(); err != nil {
+		fmt.Fprintln(os.Stderr, "azkaban: rollback: cannot save the session ("+err.Error()+")")
+		return
+	}
+	changes := diffSnapshots(s.Before, s.After)
+	var deleted, modified int
+	for _, c := range changes {
+		switch c.Kind {
+		case "deleted":
+			deleted++
+		case "modified":
+			modified++
+		}
+	}
+	auditLog.event("rollback", map[string]any{
+		"session": s.ID, "deleted": deleted, "modified": modified, "changes": len(changes),
+	})
+	if deleted == 0 && modified == 0 {
+		fmt.Fprintf(os.Stderr, "azkaban: rollback: %s — nothing was deleted or modified\n", s.ID)
+		return
+	}
+	// Loud, and with the command to run. This is the moment someone needs it.
+	fmt.Fprintf(os.Stderr,
+		"azkaban: rollback: %s — %d deleted, %d modified.\n  Review: azkaban rollback show %s\n",
+		s.ID, deleted, modified, s.ID)
 }
 
 // --------------------------------------------------------------------------- //
@@ -941,7 +1428,7 @@ func warnTIOCSTI() {
 	if fi, err := os.Stdin.Stat(); err != nil || fi.Mode()&os.ModeCharDevice == 0 {
 		return // not on a terminal, nothing to inject into
 	}
-	fmt.Fprintln(os.Stderr, "azkaban: WARNING: this kernel allows TIOCSTI; the jail shares your terminal and can inject commands your shell runs after it exits. Close it host-wide with: sysctl -w dev.tty.legacy_tiocsti=0")
+	auditLog.degraded("tiocsti-permissive", "this kernel allows TIOCSTI; the jail shares your terminal and can inject commands your shell runs after it exits. Close it host-wide with: sysctl -w dev.tty.legacy_tiocsti=0")
 }
 
 // Resource caps. The default overlay puts writes in a tmpfs, i.e. in RAM, which
@@ -1005,9 +1492,26 @@ func applyRlimits() {
 // child lands in the cgroup before it can fork; nil simply means the memory cap
 // is not enforced, never that the jail should refuse to start.
 func setupCgroup(memMax string, pidsMax int) *os.File {
+	// An explicitly requested cap that cannot be enforced is a hard failure, not
+	// a warning. docs/design.md positions --mem-max as "the real bound" on the
+	// RAM-backed overlay — the rlimits are per-file and do not bound total
+	// overlay growth — so degrading leaves the flag looking like it worked while
+	// the jail runs with no memory bound at all, having printed one line that
+	// scrolls away. Nothing asked for cannot be refused; only the pidsMax-only
+	// path still degrades, because nobody asked for that one.
+	unavailable := func(why string) *os.File {
+		if memMax != "" {
+			fatal(1, "--mem-max "+memMax+" cannot be enforced: "+why+".\n"+
+				"  A cap that silently does nothing is worse than no cap — this run would have\n"+
+				"  had no memory bound at all. Delegate a cgroup v2 memory controller, or drop\n"+
+				"  --mem-max to run without one.")
+		}
+		return cgroupUnavailable(why)
+	}
+
 	data, err := os.ReadFile("/proc/self/cgroup")
 	if err != nil {
-		return cgroupUnavailable("cannot read /proc/self/cgroup")
+		return unavailable("cannot read /proc/self/cgroup")
 	}
 	var rel string
 	for _, l := range strings.Split(string(data), "\n") {
@@ -1016,30 +1520,32 @@ func setupCgroup(memMax string, pidsMax int) *os.File {
 		}
 	}
 	if rel == "" {
-		return cgroupUnavailable("no cgroup v2 mount for this process")
+		return unavailable("no cgroup v2 mount for this process")
 	}
 	parent := filepath.Dir(filepath.Join("/sys/fs/cgroup", rel))
 	sub, _ := os.ReadFile(filepath.Join(parent, "cgroup.subtree_control"))
 	if !strings.Contains(string(sub), "memory") {
-		return cgroupUnavailable("no delegated memory controller at " + parent)
+		return unavailable("no delegated memory controller at " + parent)
 	}
 
 	dir := filepath.Join(parent, fmt.Sprintf("azkaban-%d", os.Getpid()))
 	if err := os.Mkdir(dir, 0o755); err != nil {
-		return cgroupUnavailable("cannot create " + dir + ": " + err.Error())
+		return unavailable("cannot create " + dir + ": " + err.Error())
 	}
 	tempTrack(dir) // removed by the same cleanup path as the temp files
 
 	if memMax != "" {
+		// Same reasoning: reaching here means the tree is usable, so a refused
+		// write is the cap not being applied, and it must not pass as a warning.
 		if err := os.WriteFile(filepath.Join(dir, "memory.max"), []byte(memMax), 0o644); err != nil {
-			fmt.Fprintln(os.Stderr, "azkaban: warning: could not set memory.max: "+err.Error())
+			fatal(1, "--mem-max "+memMax+" cannot be enforced: could not set memory.max: "+err.Error())
 		}
 		// Without this the cap is advisory: memory.max triggers reclaim, and on a
 		// machine with swap the excess is simply paged out instead of refused.
 		// Measured: 256 MiB allocated fine under a 64 MiB cap until swap was
 		// disabled for the group.
 		if err := os.WriteFile(filepath.Join(dir, "memory.swap.max"), []byte("0"), 0o644); err != nil {
-			fmt.Fprintln(os.Stderr, "azkaban: warning: could not disable swap for the cgroup; --mem-max will page out rather than refuse.")
+			auditLog.degraded("cgroup-swap", "could not disable swap for the cgroup; --mem-max will page out rather than refuse.")
 		}
 	}
 	if pidsMax > 0 {
@@ -1048,7 +1554,7 @@ func setupCgroup(memMax string, pidsMax int) *os.File {
 
 	fd, err := os.Open(dir)
 	if err != nil {
-		return cgroupUnavailable("cannot open " + dir)
+		return unavailable("cannot open " + dir)
 	}
 	return fd
 }
@@ -1062,11 +1568,12 @@ func maskFileOnce(p *string) string {
 	return *p
 }
 
-// cgroupUnavailable - Warns once and returns nil, the "no cap" answer every
-// failed step in setupCgroup shares. Loud on purpose: a silently uncapped jail
-// is the one that takes the host down.
+// cgroupUnavailable - Warns once and returns nil, the "no cap" answer for a run
+// that did not ask for one. Loud on purpose: a silently uncapped jail is the one
+// that takes the host down. A run that DID ask is refused instead — see the
+// unavailable closure in setupCgroup.
 func cgroupUnavailable(why string) *os.File {
-	fmt.Fprintln(os.Stderr, "azkaban: warning: resource cgroup unavailable ("+why+"); memory is NOT capped.")
+	auditLog.degraded("cgroup-unavailable", "resource cgroup unavailable ("+why+"); memory is NOT capped.")
 	return nil
 }
 
@@ -1170,13 +1677,45 @@ func cleanupOnSignal() {
 // is fatal rather than degraded: every caller is building a file the jail is
 // about to have bound over a real one.
 func tempWith(prefix, content string) string {
+	return tempWithMode(prefix, content, 0)
+}
+
+// tempWithMode - tempWith, with an explicit mode. Only the Claude Code hook
+// needs one: it is a script the agent executes, and CreateTemp's 0600 is not
+// executable.
+func tempWithMode(prefix, content string, mode os.FileMode) string {
 	f, err := os.CreateTemp("/tmp", prefix)
 	if err != nil {
 		fatal(1, err.Error())
 	}
 	f.WriteString(content)
 	f.Close()
+	if mode != 0 {
+		if err := os.Chmod(f.Name(), mode); err != nil {
+			fatal(1, err.Error())
+		}
+	}
 	return tempTrack(f.Name())
+}
+
+// presentUnder - The $HOME-relative entries that actually exist on the host.
+//
+// The jail's self-description must list what it got, not what was asked for:
+// every bind loop skips an entry with no source, so naming one here would tell
+// the agent a path is available when it is not — which is the exact confusion
+// this file exists to remove.
+func presentUnder(home string, entries []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, rel := range entries {
+		p := resolve(home, rel)
+		if !exists(p) || seen[p] {
+			continue
+		}
+		seen[p] = true
+		out = append(out, p)
+	}
+	return out
 }
 
 // splitEnv - Reads one AZKABAN_LL_* allowlist. FieldsFunc drops empty fields,
@@ -1219,7 +1758,15 @@ func bindSafe(home, p string) bool {
 // unless absolute.
 // "mask" blanks a path out; naming a masked path with "ro"/"rw"/"persist"
 // un-masks it. "persist" also opts that one path out of the throwaway overlay.
-type userConf struct{ ro, rw, env, mask, persist []string }
+type userConf struct {
+	ro, rw, env, mask, persist, net, credential []string
+	// AF_UNIX grants, the every-run form of --unix-socket/--unix-socket-dir.
+	unixSocket, unixSocketDir []string
+	// auditOff records `audit off`. A bool rather than a list because it is a
+	// switch, and the default (record) has to survive a config that says
+	// nothing about it.
+	auditOff bool
+}
 
 // loadUserBinds - Reads ~/.config/azkaban/config, or an empty config when
 // there is none. A missing file is the normal case, not an error.
@@ -1256,6 +1803,18 @@ func parseUserBinds(data string) userConf {
 			c.mask = append(c.mask, val)
 		case "persist":
 			c.persist = append(c.persist, val)
+		case "net":
+			c.net = append(c.net, val)
+		case "credential":
+			c.credential = append(c.credential, val)
+		case "unix-socket":
+			c.unixSocket = append(c.unixSocket, val)
+		case "unix-socket-dir":
+			c.unixSocketDir = append(c.unixSocketDir, val)
+		case "audit":
+			// Only "off" turns it off. Anything else — including a typo — leaves
+			// the record on, which is the direction a mistake should fail in.
+			c.auditOff = val == "off"
 		}
 	}
 	return c
@@ -1293,7 +1852,12 @@ func shquote(args []string) string {
 // not run defers, so the cleanup has to happen here rather than being trusted
 // to the caller.
 func fatal(code int, msg string) {
-	tempCleanup() // os.Exit does not run defers
+	// os.Exit runs no defers, so both of these have to be done by hand. A
+	// record with no exit line is one that cannot be told apart from a run
+	// still in progress — and a run that died is exactly the one being read.
+	auditLog.event("fatal", map[string]any{"message": msg})
+	auditLog.close(code)
+	tempCleanup()
 	fmt.Fprintln(os.Stderr, "azkaban: "+msg)
 	os.Exit(code)
 }
@@ -1318,17 +1882,43 @@ func usage() {
   --display      pass through X11/wayland/XAUTHORITY + the wayland/pulse sockets
                  from /run/user (OFF by default; ssh-agent, gpg-agent, dbus and
                  any rootless container socket in there stay hidden)
-  --ssh-agent    forward $SSH_AUTH_SOCK (+ known_hosts read-only) so git push
-                 over ssh works. The keys stay on the host — the jail gets a
-                 signing oracle, not the key — but that oracle authenticates as
-                 you to every host they open, for as long as the jail runs.
-                 "ssh-add -c" makes each signature prompt on the host. OFF by
-                 default; ~/.ssh itself is never bound.
+  --ssh-agent    forward the agent (+ known_hosts read-only) so git push over ssh
+                 works. The jail talks to a FILTERING PROXY in the outer process
+                 that forwards only "list keys" and "sign this" and refuses add,
+                 remove, lock and extensions — so a tool inside can no longer
+                 delete the keys you loaded or lock your host agent. The keys
+                 stay on the host either way; the jail gets a signing oracle,
+                 and that oracle still authenticates as you to every host they
+                 open. OFF by default; ~/.ssh itself is never bound.
+  --ssh-agent-confirm
+                 ...and ask on the terminal before every signature. This is
+                 "ssh-add -c" for a jail that cannot reach the host's prompt.
+  --ssh-agent-raw
+                 ...bind the REAL agent socket with no filter, the pre-proxy
+                 behaviour. Anything in the jail can then add, remove or lock
+                 your keys as well as sign with them.
+  --unix-socket PATH
+                 bind ONE unix socket, and nothing around it. For "this tool may
+                 reach Postgres at /tmp/.s.PGSQL.5432" without granting /tmp.
+                 Repeatable; connect and bind are not distinguished. For every
+                 run, use "unix-socket" lines in the config.
+  --unix-socket-dir DIR
+                 same, for a directory whose socket names are generated at
+                 runtime (PID-suffixed paths). Wider by exactly one directory,
+                 which is why both exist. Repeatable.
   --allow-userns permit nested user namespaces (needed by Chrome/Electron tools)
   --no-net       isolate the network in a new namespace (breaks internet access)
   --net-ports L  allow outbound TCP only to these ports (comma-separated), enforced
                  by landlock. Blocks localhost services and LAN scanning. UDP and
                  therefore DNS are unaffected. Needs the landlock stage.
+  --net-host H   allow outbound traffic only to this host, through a CONNECT
+                 proxy in the outer process. Repeatable; "*.example.com" covers
+                 subdomains but not the bare domain. TLS is NOT intercepted —
+                 the target is checked and raw bytes relayed. Sets HTTPS_PROXY
+                 in the jail and narrows --net-ports to the proxy, so a client
+                 that ignores the variable is refused by the kernel rather than
+                 connecting directly. Needs the landlock stage. For every run,
+                 use "net <host>" lines in the config.
   --keep-env     inherit the whole host environment (default: clear it and pass
                  only HOME/PATH/TERM/LANG/...; add more with "env NAME" in
                  ~/.config/azkaban/config)
@@ -1349,8 +1939,40 @@ func usage() {
                  must keep across runs (a login token) without --persist making
                  the whole allowlist destroyable. Repeatable; name the file, not
                  its directory. For every run, use "persist" lines in the config.
+  --credential P allow the jail to use a host credential WITHOUT giving it the
+                 secret: it talks plain HTTP to a loopback broker, which attaches
+                 the real token and makes the TLS connection itself. "github" is
+                 the only provider so far; add " write" to permit push, which the
+                 default read-only policy refuses. Repeatable. For every run, use
+                 "credential <provider>" lines in the config.
+  --rollback     snapshot the writable $HOME roots either side of the run and
+                 let writes land FOR REAL, so destruction becomes a diff to
+                 review rather than a loss. An alternative to the default
+                 throwaway overlay, not a layer on it. Review and undo with
+                 "azkaban rollback show|restore".
+  --elevate      let a denied READ be approved on the terminal instead of ending
+                 the run. A seccomp supervisor in the outer process traps opens,
+                 asks you about any path outside the allowlist, and hands back a
+                 read-only descriptor it opened itself — so a grant is bounded by
+                 your own permissions and cannot exceed them. Landlock stays the
+                 floor: anything the supervisor does not answer is denied by the
+                 kernel as usual. Writes are never elevated. OFF by default, and
+                 rate-limited to 10 prompts/s so a tool in a loop cannot wear you
+                 down. Needs the landlock stage.
   --dry-run      print the bwrap command instead of running it
+  --no-guidance  do not describe the jail to the tool inside it. By default
+                 /run/azkaban holds a read-only policy.json, a README, a Claude
+                 Code PostToolUse hook and this binary, so a confused agent can
+                 run "azkaban why --self" instead of guessing at an error.
+  --no-audit     do not record this run. Every run is otherwise written as JSONL
+                 to $XDG_STATE_HOME/azkaban/audit/ — the resolved policy, the
+                 mode flags, every degradation, every docker-filter decision and
+                 the exit code. "audit off" in the config turns it off for good.
   -h, --help     this help
+
+  azkaban why    explain what the jail would do with one path, host or port,
+                 without starting one. "azkaban why -h" for its flags.
+  azkaban rollback  list, review and undo what a --rollback run changed.
 `)
 }
 
@@ -1376,7 +1998,12 @@ func usage() {
 //      opt-in and its filtering proxy entirely. The fix is to stop binding the
 //      directory wholesale and allowlist only what display needs; until then,
 //      do not combine --display with a rootless container daemon.
-//   4. no net namespace: full host LAN + localhost service access.
+//   4. no net namespace: full host LAN + localhost service access. --net-ports
+//      narrows this to a port list at the kernel, and `net <host>` narrows it
+//      further to a host allowlist behind a CONNECT proxy — but neither closes
+//      UDP, so DNS remains a usable covert channel out of the jail, and a
+//      client speaking raw TCP to the proxy port is bounded by the port number
+//      and nothing else. Egress filtering here is a guardrail, not a boundary.
 //   5. TIOCSTI terminal injection: the jail always shares the controlling
 //      terminal, and azkaban offers no mitigation of its own — detaching the
 //      session closes the vector but costs job control on every run, including
@@ -1400,6 +2027,25 @@ func usage() {
 //      they are authorized, for the life of the jail. It is strictly narrower
 //      than the alternative it exists to prevent (`ro ~/.ssh`, which hands over
 //      the key itself, permanently) and than --display, which grants the same
-//      oracle plus X11 and dbus. `ssh-add -c` on the host reduces it to one
-//      confirmation prompt per signature; there is no in-jail equivalent.
+//      oracle plus X11 and dbus. NARROWED since: the jail now reaches a
+//      filtering proxy (sshagentproxy.go) that forwards only "list keys" and
+//      "sign this", so add/remove/lock are gone and --ssh-agent-confirm is the
+//      in-jail equivalent of `ssh-add -c` this entry used to say did not exist.
+//      What remains is the signature itself, which is the whole point of the
+//      flag and cannot be filtered away. --ssh-agent-raw restores the old,
+//      unfiltered socket.
+//  11. --elevate lets a human hand the jail a read-only descriptor for a path
+//      outside the allowlist, one path at a time and only while a terminal is
+//      there to answer. It is bounded by your own filesystem permissions and
+//      by Landlock underneath it — the supervisor can only ADD a read it could
+//      perform anyway, never remove a denial the floor makes. The real vector
+//      is the human: a prompt storm is designed to be answered "no", and the
+//      rate limit exists because a tool that asks a thousand times is trying
+//      to be approved by fatigue. Writes are never elevated, so nothing here
+//      reaches vectors 2, 7 or 9.
+//  12. --unix-socket/--unix-socket-dir bind a named socket into the jail, which
+//      is whatever the daemon on the other end lets your user do. It replaces
+//      the wider grant people reached for instead (`--rw /tmp`), and connect
+//      and bind are NOT distinguished — Landlock has no socket-path right, so
+//      a grant lets the jail bind a name as well as connect to one.
 // --------------------------------------------------------------------------- //
