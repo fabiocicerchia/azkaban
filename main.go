@@ -152,11 +152,36 @@ const selfInJail = "/tmp/.azkaban-self"
 // must never be able to write it.
 const azkabanCfgDir = ".config/azkaban"
 
+// bwrapBin - The bubblewrap binary, by absolute path: $PATH belongs to the
+// caller and this is the process that builds the sandbox.
+const bwrapBin = "/usr/bin/bwrap"
+
+// landlockExecFlag - argv[1] that selects the inner stage. main dispatches on
+// it and outer prepends it to the inner command; the two must agree or the
+// jail re-runs its own outer stage instead of applying Landlock.
+const landlockExecFlag = "--landlock-exec"
+
+// The AZKABAN_LL_* channel carries the Landlock allowlists from the outer
+// stage to the inner one across the bwrap boundary. Both stages have to spell
+// each name identically: splitEnv on an unset variable yields an EMPTY list,
+// which Landlock accepts as "grant nothing", so a typo on either side does not
+// fail — it silently produces a ruleset that denies the target everything, or,
+// for a name the inner stage never reads, one that was never narrowed at all.
+// Named once here so the two ends cannot drift apart.
+const (
+	llEnvPrefix  = "AZKABAN_LL_"
+	llEnvRO      = llEnvPrefix + "RO"
+	llEnvROFiles = llEnvPrefix + "ROFILES"
+	llEnvRW      = llEnvPrefix + "RW"
+	llEnvRWFiles = llEnvPrefix + "RWFILES"
+	llEnvPorts   = llEnvPrefix + "PORTS"
+)
+
 // main - Dispatches to one of the two roles. --landlock-exec means this
 // process is already inside bwrap and is the inner stage; anything else is the
 // outer stage that has yet to build the jail.
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "--landlock-exec" {
+	if len(os.Args) > 1 && os.Args[1] == landlockExecFlag {
 		landlockStage(os.Args[2:]) // runs inside bwrap
 		return
 	}
@@ -175,7 +200,7 @@ func main() {
 // for.
 func landlockStage(args []string) {
 	if len(args) < 2 || args[0] != "--" {
-		fatal(2, "usage: --landlock-exec -- <cmd> [args...]")
+		fatal(2, "usage: "+landlockExecFlag+" -- <cmd> [args...]")
 	}
 	cmd := args[1:]
 
@@ -186,8 +211,8 @@ func landlockStage(args []string) {
 	// subprocess in a pty breaks. (stdin/stdout keep working: fds inherited from
 	// before the sandbox are not re-checked, which is why this hides so well.)
 	rules := []landlock.Rule{
-		landlock.RODirs(splitEnv("AZKABAN_LL_RO")...).IgnoreIfMissing(),
-		landlock.ROFiles(splitEnv("AZKABAN_LL_ROFILES")...).IgnoreIfMissing(),
+		landlock.RODirs(splitEnv(llEnvRO)...).IgnoreIfMissing(),
+		landlock.ROFiles(splitEnv(llEnvROFiles)...).IgnoreIfMissing(),
 		// WithRefer is the same kind of trap: without it landlock denies every
 		// link/rename that CROSSES two directories, with EXDEV. That is how npm,
 		// pnpm and yarn populate their cache (link _cacache/tmp/x ->
@@ -195,8 +220,8 @@ func landlockStage(args []string) {
 		// while same-directory renames (go, pip) keep working. Refer is granted
 		// only on the writable set, and the kernel requires it on BOTH ends of the
 		// operation, so it cannot move anything out to a read-only path.
-		landlock.RWDirs(splitEnv("AZKABAN_LL_RW")...).WithIoctlDev().WithRefer().IgnoreIfMissing(),
-		landlock.RWFiles(splitEnv("AZKABAN_LL_RWFILES")...).WithIoctlDev().IgnoreIfMissing(),
+		landlock.RWDirs(splitEnv(llEnvRW)...).WithIoctlDev().WithRefer().IgnoreIfMissing(),
+		landlock.RWFiles(splitEnv(llEnvRWFiles)...).WithIoctlDev().IgnoreIfMissing(),
 	}
 
 	// Network egress. RestrictPaths deliberately drops network handling, so the
@@ -207,7 +232,7 @@ func landlockStage(args []string) {
 	// is a thing agents do constantly — and a sandbox people disable is worth
 	// nothing. With it, localhost services, LAN scanning and exfil to arbitrary
 	// ports are closed at the kernel, with no proxy in the path.
-	ports := splitEnv("AZKABAN_LL_PORTS")
+	ports := splitEnv(llEnvPorts)
 	for _, p := range ports {
 		n, err := strconv.ParseUint(p, 10, 16)
 		if err != nil {
@@ -234,7 +259,7 @@ func landlockStage(args []string) {
 	// allowlist, and it only advertises what the sandbox looks like.
 	var env []string
 	for _, kv := range os.Environ() {
-		if !strings.HasPrefix(kv, "AZKABAN_LL_") {
+		if !strings.HasPrefix(kv, llEnvPrefix) {
 			env = append(env, kv)
 		}
 	}
@@ -247,11 +272,35 @@ func landlockStage(args []string) {
 // Outer role: parse flags, build the bwrap invocation, run it.
 // --------------------------------------------------------------------------- //
 
-// outer - Parses the flags, builds the bwrap invocation from the allowlists at
-// the top of this file, and runs it. Everything the jail will be is decided
-// here; --dry-run prints the result instead of executing it, which is what
-// makes the decision auditable.
-func outer(argv []string) {
+// bwrapArgs - The bwrap option list under construction. Order is load-bearing:
+// bwrap applies its arguments in sequence, so a bind added later wins over one
+// added earlier, and roFreeze/maskPaths depend on exactly that. Appending is
+// the only operation, which is what keeps that sequence readable as one pass
+// down outer() and verbatim in --dry-run's output.
+type bwrapArgs []string
+
+// add - Appends one option and its operands to the invocation.
+func (b *bwrapArgs) add(xs ...string) { *b = append(*b, xs...) }
+
+// jailOpts - What the flags decided, resolved once. Named for what the jail
+// will BE rather than for the flag that was typed: several are negatives
+// (--no-gpu, --no-landlock, --persist), and inverting them here keeps every
+// test further down positive.
+type jailOpts struct {
+	gpu, overlay, landlockOn, rlimits  bool
+	display, netIsolate, sshAgent      bool
+	keepEnv, dry, allowUserns, rawSock bool
+	memMax, netPorts                   string
+	// socketKind is "", "docker" or "podman": which container socket to bind.
+	socketKind string
+	// Per-run additions to the config file's ro/rw/persist lists.
+	ro, rw, persist []string
+}
+
+// parseFlags - Turns argv into the settings above plus the command to run.
+// done is true when --help was served and the caller should stop; every other
+// parse failure exits through fatal(2) rather than returning.
+func parseFlags(argv []string) (o jailOpts, cmd []string, done bool) {
 	// flag.Parse stops at the first non-flag argument and honours "--", which is
 	// exactly the "everything from here on is the command" rule this needs.
 	// ContinueOnError (rather than ExitOnError) so -h still exits 0 and every
@@ -287,15 +336,16 @@ func outer(argv []string) {
 	if err := fs.Parse(argv); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			usage()
-			return
+			return o, nil, true
 		}
 		fatal(2, err.Error())
 	}
 
-	gpu, overlay, landlockOn, rlimits := !*fNoGPU, !*fPersist, !*fNoLandlock, !*fNoRlimits
-	display, netIsolate, sshAgent := *fDisplay, *fNoNet, *fSSHAgent
-	keepEnv, dry, allowUserns, rawSock := *fKeepEnv, *fDry, *fAllowUserns, *fRawSock
-	memMax, netPorts := *fMemMax, *fNetPorts
+	o.gpu, o.overlay, o.landlockOn, o.rlimits = !*fNoGPU, !*fPersist, !*fNoLandlock, !*fNoRlimits
+	o.display, o.netIsolate, o.sshAgent = *fDisplay, *fNoNet, *fSSHAgent
+	o.keepEnv, o.dry, o.allowUserns, o.rawSock = *fKeepEnv, *fDry, *fAllowUserns, *fRawSock
+	o.memMax, o.netPorts = *fMemMax, *fNetPorts
+	o.ro, o.rw, o.persist = fRO, fRW, fPersistPath
 	// No container socket is bound unless explicitly asked for. On-by-default
 	// meant every run exposed a full container API — the one interface the jail
 	// cannot police from the inside.
@@ -304,23 +354,35 @@ func outer(argv []string) {
 	// used to imply docker, which made the least explicit spelling the most
 	// dangerous request: on a host with no rootless daemon that is the ROOTFUL
 	// socket, unfiltered, from a flag that never says "docker" anywhere in it.
-	socketKind := ""
 	switch {
 	case *fPodman:
-		socketKind = "podman"
+		o.socketKind = "podman"
 	case *fDocker:
-		socketKind = "docker"
-	case rawSock:
+		o.socketKind = "docker"
+	case o.rawSock:
 		fatal(2, "--unfiltered-container-socket says how to bind the socket, not which one: add --bind-docker or --bind-podman")
 	}
 
-	cmd := fs.Args()
+	cmd = fs.Args()
 	if len(cmd) == 0 {
 		if sh := os.Getenv("SHELL"); sh != "" {
 			cmd = []string{sh}
 		} else {
 			cmd = []string{"bash"}
 		}
+	}
+
+	return o, cmd, false
+}
+
+// outer - Parses the flags, builds the bwrap invocation from the allowlists at
+// the top of this file, and runs it. Everything the jail will be is decided
+// here; --dry-run prints the result instead of executing it, which is what
+// makes the decision auditable.
+func outer(argv []string) {
+	o, cmd, done := parseFlags(argv)
+	if done {
+		return
 	}
 
 	home, _ := os.UserHomeDir()
@@ -341,9 +403,9 @@ func outer(argv []string) {
 	uc := loadUserBinds(home)
 	// Merged here, before every consumer (ro binds, rw binds, the mask opt-out),
 	// so a flag path and a config path are indistinguishable from this point on.
-	uc.ro = append(uc.ro, fRO...)
-	uc.rw = append(uc.rw, fRW...)
-	uc.persist = append(uc.persist, fPersistPath...)
+	uc.ro = append(uc.ro, o.ro...)
+	uc.rw = append(uc.rw, o.rw...)
+	uc.persist = append(uc.persist, o.persist...)
 
 	// Patched /etc/hosts and /etc/resolv.conf. /run is tmpfs'd (empty) inside
 	// the jail, which breaks the usual resolv.conf -> /run/.../stub-resolv.conf
@@ -365,29 +427,28 @@ func outer(argv []string) {
 	}
 	var llROFiles []string
 
-	var a []string
-	add := func(xs ...string) { a = append(a, xs...) }
+	var a bwrapArgs
 
 	// Environment: drop the host env, then re-add the allowlist. MUST come before
 	// every --setenv below — bwrap applies args in order and --clearenv wipes
 	// whatever preceded it.
-	if !keepEnv {
-		add("--clearenv")
+	if !o.keepEnv {
+		a.add("--clearenv")
 		for _, k := range slices.Concat(envKeep, uc.env) {
 			if v, ok := os.LookupEnv(k); ok {
-				add("--setenv", k, v)
+				a.add("--setenv", k, v)
 			}
 		}
 	}
 
 	// Base read-only root.
-	add("--ro-bind", "/usr", "/usr")
-	add("--symlink", "usr/bin", "/bin")
-	add("--symlink", "usr/lib", "/lib")
-	add("--symlink", "usr/lib64", "/lib64")
-	add("--symlink", "usr/sbin", "/sbin")
-	add("--ro-bind", "/etc", "/etc")
-	add("--ro-bind", hostsFile, "/etc/hosts")
+	a.add("--ro-bind", "/usr", "/usr")
+	a.add("--symlink", "usr/bin", "/bin")
+	a.add("--symlink", "usr/lib", "/lib")
+	a.add("--symlink", "usr/lib64", "/lib64")
+	a.add("--symlink", "usr/sbin", "/sbin")
+	a.add("--ro-bind", "/etc", "/etc")
+	a.add("--ro-bind", hostsFile, "/etc/hosts")
 
 	// ssh fatals ("Bad owner or permissions") on any Include'd config file whose
 	// owner is neither root nor the caller. bwrap maps ONE uid, so every
@@ -403,20 +464,20 @@ func outer(argv []string) {
 			p = t
 		}
 		if data, err := os.ReadFile(p); err == nil {
-			add("--ro-bind", tempWith("azkaban-sshconf-", string(data)), p)
+			a.add("--ro-bind", tempWith("azkaban-sshconf-", string(data)), p)
 		}
 	}
 
 	if exists("/opt") {
-		add("--ro-bind", "/opt", "/opt")
+		a.add("--ro-bind", "/opt", "/opt")
 	}
-	add("--ro-bind", "/sys", "/sys")
+	a.add("--ro-bind", "/sys", "/sys")
 
 	// Kernel interfaces.
-	add("--dev", "/dev")
-	add("--proc", "/proc")
-	add("--tmpfs", "/tmp")
-	add("--tmpfs", "/run")
+	a.add("--dev", "/dev")
+	a.add("--proc", "/proc")
+	a.add("--tmpfs", "/tmp")
+	a.add("--tmpfs", "/run")
 
 	// resolv.conf is usually a symlink into /run (tmpfs'd above, now empty), so
 	// bind our copy at the symlink's real target AFTER the tmpfs — otherwise the
@@ -427,32 +488,32 @@ func outer(argv []string) {
 			resolvTarget = t
 		}
 	}
-	add("--ro-bind", resolvFile, resolvTarget)
+	a.add("--ro-bind", resolvFile, resolvTarget)
 
 	// /proc entries that describe the host kernel. Addresses are usually zeroed by
 	// kptr_restrict, but the symbol and module lists still fingerprint the exact
 	// kernel build, which is the first step in picking an exploit.
 	for _, p := range procMask {
-		add("--ro-bind", maskFileOnce(&maskFile), "/proc/"+p)
+		a.add("--ro-bind", maskFileOnce(&maskFile), "/proc/"+p)
 	}
 
 	// Mask sensitive /sys subtrees.
 	for _, s := range sysMask {
 		if exists("/sys/" + s) {
-			add("--tmpfs", "/sys/"+s)
+			a.add("--tmpfs", "/sys/"+s)
 		}
 	}
 
 	// GPU passthrough. Landlock now denies /dev writes by default, so each device
 	// that is bound must also be granted explicitly or the GPU is unusable.
-	if gpu {
+	if o.gpu {
 		devs, _ := filepath.Glob("/dev/nvidia*")
 		devs = append(devs, "/dev/dri")
 		for _, d := range devs {
 			if !exists(d) {
 				continue
 			}
-			add("--dev-bind", d, d)
+			a.add("--dev-bind", d, d)
 			if isDir(d) {
 				llRW = append(llRW, d)
 			} else {
@@ -471,9 +532,9 @@ func outer(argv []string) {
 	// does NOT stop `-v /:/host` reaching ~/.ssh as your user, so the socket is
 	// bound through a FILTERING PROXY (dockerproxy.go) unless --unfiltered-container-socket.
 	// Podman's REST service speaks the same Docker API, so the same proxy applies.
-	if socketKind != "" {
+	if o.socketKind != "" {
 		realSock := ""
-		for _, cand := range containerSockets[socketKind] {
+		for _, cand := range containerSockets[o.socketKind] {
 			p := strings.ReplaceAll(cand, "$XDG", runtimeDir)
 			if exists(p) {
 				realSock = p
@@ -482,19 +543,19 @@ func outer(argv []string) {
 		}
 		switch {
 		case realSock == "":
-			fatal(1, "no "+socketKind+" socket found (looked in "+
-				strings.Join(containerSockets[socketKind], ", ")+
+			fatal(1, "no "+o.socketKind+" socket found (looked in "+
+				strings.Join(containerSockets[o.socketKind], ", ")+
 				"). containerd is not offered: it speaks gRPC, which the filtering proxy cannot inspect.")
 		case realSock == "/var/run/docker.sock" || realSock == "/run/podman/podman.sock":
-			fmt.Fprintln(os.Stderr, "azkaban: WARNING: no rootless "+socketKind+
+			fmt.Fprintln(os.Stderr, "azkaban: WARNING: no rootless "+o.socketKind+
 				"; using ROOTFUL "+realSock+" = host root inside the jail. Set up a rootless daemon to close this.")
 		}
 
 		sockForJail := realSock // path bound FROM the host
 		switch {
-		case rawSock:
+		case o.rawSock:
 			fmt.Fprintln(os.Stderr, "azkaban: WARNING: --unfiltered-container-socket binds the UNFILTERED socket; `docker run -v /:/h` can read/write everything your user owns.")
-		case !dry:
+		case !o.dry:
 			ps, err := startDockerFilterProxy(realSock, cwd)
 			if err != nil {
 				fatal(1, "container filter proxy: "+err.Error())
@@ -505,39 +566,39 @@ func outer(argv []string) {
 			// socket is what gets bound.
 			fmt.Fprintln(os.Stderr, "azkaban: note: --dry-run prints the RAW socket as the bind source; a real run substitutes the filtering proxy socket there.")
 		}
-		add("--bind", sockForJail, realSock)
-		add("--setenv", "DOCKER_HOST", "unix://"+realSock)
-		if socketKind == "podman" {
-			add("--setenv", "CONTAINER_HOST", "unix://"+realSock)
+		a.add("--bind", sockForJail, realSock)
+		a.add("--setenv", "DOCKER_HOST", "unix://"+realSock)
+		if o.socketKind == "podman" {
+			a.add("--setenv", "CONTAINER_HOST", "unix://"+realSock)
 		}
 		llRWFiles = append(llRWFiles, realSock)
 	}
 
 	// Shared memory (needed by chromium/electron based tools).
 	if exists("/dev/shm") {
-		add("--dev-bind", "/dev/shm", "/dev/shm")
+		a.add("--dev-bind", "/dev/shm", "/dev/shm")
 	}
 
 	// Display passthrough: X11 + wayland + auth + the whole XDG runtime dir.
 	// That dir also holds ssh-agent/gpg-agent/dbus sockets — see vector 3.
-	if display {
+	if o.display {
 		if exists("/tmp/.X11-unix") {
-			add("--bind", "/tmp/.X11-unix", "/tmp/.X11-unix")
+			a.add("--bind", "/tmp/.X11-unix", "/tmp/.X11-unix")
 		}
 		if xa := os.Getenv("XAUTHORITY"); xa != "" && exists(xa) {
-			add("--ro-bind", xa, xa)
+			a.add("--ro-bind", xa, xa)
 		}
 		// Bind ONLY the display sockets, never the directory. $XDG_RUNTIME_DIR also
 		// holds ssh-agent, gpg-agent, dbus — and a ROOTLESS docker/podman socket,
 		// so binding it wholesale handed over the container socket raw and bypassed
 		// the --bind-docker opt-in entirely.
 		if exists(runtimeDir) {
-			add("--tmpfs", runtimeDir)
+			a.add("--tmpfs", runtimeDir)
 			llRW = append(llRW, runtimeDir)
 			for _, pat := range displaySockets {
 				ms, _ := filepath.Glob(filepath.Join(runtimeDir, pat))
 				for _, m := range ms {
-					add("--bind", m, m)
+					a.add("--bind", m, m)
 				}
 			}
 		}
@@ -546,13 +607,13 @@ func outer(argv []string) {
 	// Home: empty tmpfs, then bind back ONLY an allowlist. Everything else under
 	// $HOME (~/.ssh, ~/.aws, ~/.gnupg, sibling projects, ...) stays hidden.
 	// Extra paths come from the TRUSTED per-user config, never from the cwd.
-	add("--tmpfs", home)
+	a.add("--tmpfs", home)
 	for _, rel := range slices.Concat(roPaths, uc.ro) {
 		p := resolve(home, rel)
 		if !exists(p) {
 			continue
 		}
-		add("--ro-bind", p, p)
+		a.add("--ro-bind", p, p)
 		if isDir(p) {
 			llRO = append(llRO, p)
 		} else {
@@ -568,9 +629,9 @@ func outer(argv []string) {
 	//
 	// --persist turns it off for the runs where writes are meant to survive.
 	// Note the project dir is NEVER overlaid; it is the workspace, and it has git.
-	if overlay && !bwrapHas("--tmp-overlay") {
+	if o.overlay && !bwrapHas("--tmp-overlay") {
 		fmt.Fprintln(os.Stderr, "azkaban: WARNING: this bwrap has no --tmp-overlay; falling back to real writes. Upgrade bubblewrap (>= 0.9) or pass --persist to silence this.")
-		overlay = false
+		o.overlay = false
 	}
 	for _, rel := range slices.Concat(rwPaths, uc.rw) {
 		p := resolve(home, rel)
@@ -581,23 +642,23 @@ func outer(argv []string) {
 			fatal(2, "refusing rw bind "+p+": it would re-expose $HOME (or /) that the jail just hid")
 		}
 		switch {
-		case isDir(p) && overlay:
-			add("--overlay-src", p, "--tmp-overlay", p)
+		case isDir(p) && o.overlay:
+			a.add("--overlay-src", p, "--tmp-overlay", p)
 			llRW = append(llRW, p)
 		case isDir(p):
-			add("--bind", p, p)
+			a.add("--bind", p, p)
 			llRW = append(llRW, p)
-		case overlay:
+		case o.overlay:
 			// overlayfs needs a directory; for a single file the equivalent is a
 			// scratch COPY bound over it, so writes land somewhere disposable.
 			cp, err := tempCopy(p)
 			if err != nil {
 				fatal(1, "copying "+p+" for overlay: "+err.Error())
 			}
-			add("--bind", cp, p)
+			a.add("--bind", cp, p)
 			llRWFiles = append(llRWFiles, p)
 		default:
-			add("--bind", p, p)
+			a.add("--bind", p, p)
 			llRWFiles = append(llRWFiles, p)
 		}
 	}
@@ -624,7 +685,7 @@ func outer(argv []string) {
 				"A bind needs an existing source — create it outside the jail first.")
 			continue
 		}
-		add("--bind", p, p)
+		a.add("--bind", p, p)
 		if isDir(p) {
 			llRW = append(llRW, p)
 		} else {
@@ -648,7 +709,7 @@ func outer(argv []string) {
 		if !exists(p) {
 			continue
 		}
-		add("--ro-bind", p, p)
+		a.add("--ro-bind", p, p)
 		llRO = append(llRO, p)
 	}
 
@@ -661,10 +722,10 @@ func outer(argv []string) {
 			continue
 		}
 		if isDir(p) {
-			add("--tmpfs", p)
+			a.add("--tmpfs", p)
 			continue
 		}
-		add("--ro-bind", maskFileOnce(&maskFile), p)
+		a.add("--ro-bind", maskFileOnce(&maskFile), p)
 	}
 
 	// ssh-agent passthrough. The private keys stay on the host: what crosses the
@@ -674,7 +735,7 @@ func outer(argv []string) {
 	// host your loaded keys open, so this is opt-in and stays off by default.
 	// `ssh-add -c` on the host narrows it further, to one confirmation prompt per
 	// signature. Bound after the $HOME tmpfs and the mask loop so both binds win.
-	if sshAgent {
+	if o.sshAgent {
 		sock := os.Getenv("SSH_AUTH_SOCK")
 		switch {
 		case sock == "":
@@ -682,22 +743,22 @@ func outer(argv []string) {
 		case !exists(sock):
 			fatal(1, "--ssh-agent: no socket at "+sock)
 		}
-		add("--bind", sock, sock)
-		add("--setenv", "SSH_AUTH_SOCK", sock)
+		a.add("--bind", sock, sock)
+		a.add("--setenv", "SSH_AUTH_SOCK", sock)
 		llRWFiles = append(llRWFiles, sock)
 
 		// Without known_hosts every push dies on "Host key verification failed",
 		// which makes the flag look broken. This file holds no secret — only the
 		// list of hosts you have reached, which is the small leak the flag costs.
 		if kh := filepath.Join(home, ".ssh", "known_hosts"); exists(kh) {
-			add("--ro-bind", kh, kh)
+			a.add("--ro-bind", kh, kh)
 			llROFiles = append(llROFiles, kh)
 		}
 	}
 
 	// Project working dir: writable, and made the cwd.
-	add("--bind", cwd, cwd)
-	add("--chdir", cwd)
+	a.add("--bind", cwd, cwd)
+	a.add("--chdir", cwd)
 
 	// Target binary: expose ONLY the resolved executable, never its $PATH dir.
 	// $HOME is tmpfs'd, so a binary reached via ~/.local/bin (or a symlink into
@@ -706,7 +767,7 @@ func outer(argv []string) {
 	// needed. Bound last so it overlays the home tmpfs.
 	if binPath, err := exec.LookPath(cmd[0]); err == nil {
 		binPath, _ = filepath.EvalSymlinks(binPath)
-		add("--ro-bind", binPath, binPath)
+		a.add("--ro-bind", binPath, binPath)
 		llROFiles = append(llROFiles, binPath)
 		cmd[0] = binPath
 	} else {
@@ -714,82 +775,82 @@ func outer(argv []string) {
 	}
 
 	// Isolation.
-	add("--die-with-parent")
-	add("--unshare-pid")
-	add("--unshare-uts")
-	add("--unshare-ipc")
-	add("--unshare-cgroup-try")
+	a.add("--die-with-parent")
+	a.add("--unshare-pid")
+	a.add("--unshare-uts")
+	a.add("--unshare-ipc")
+	a.add("--unshare-cgroup-try")
 	// A nested user namespace hands the jailed process a fresh capability set,
 	// which is the usual first step of a kernel-exploit chain. Blocking it makes
 	// that azkaban's guarantee rather than a property of the host's sysctl.
 	// Opt-out because Chrome/Electron-based tools build their own sandbox this way.
-	if !allowUserns {
+	if !o.allowUserns {
 		if bwrapHas("--disable-userns") {
 			// bwrap refuses --disable-userns without an explicit --unshare-user.
 			// It already creates a userns implicitly when unprivileged, so this
 			// states what was happening anyway; the uid still maps through to you.
-			add("--unshare-user")
-			add("--disable-userns")
+			a.add("--unshare-user")
+			a.add("--disable-userns")
 		} else {
 			fmt.Fprintln(os.Stderr, "azkaban: note: this bwrap has no --disable-userns; nested user namespaces stay available.")
 		}
 	}
-	if netIsolate {
-		add("--unshare-net")
+	if o.netIsolate {
+		a.add("--unshare-net")
 	}
 	// The jail keeps our controlling terminal, so on a kernel that still permits
 	// it the jail can ioctl(TIOCSTI) characters into that terminal for the host
 	// shell to run once azkaban exits. Detaching the session would close it but
 	// costs job control on every run, including the majority of kernels where the
 	// vector is already shut; the sysctl is the fix, so we only report it.
-	if !dry {
+	if !o.dry {
 		warnTIOCSTI()
 	}
-	add("--hostname", jailHostname)
+	a.add("--hostname", jailHostname)
 
 	// Environment.
-	if display {
-		add("--setenv", "DISPLAY", cmp.Or(os.Getenv("DISPLAY"), ":0"))
+	if o.display {
+		a.add("--setenv", "DISPLAY", cmp.Or(os.Getenv("DISPLAY"), ":0"))
 		if xa := os.Getenv("XAUTHORITY"); xa != "" {
-			add("--setenv", "XAUTHORITY", xa)
+			a.add("--setenv", "XAUTHORITY", xa)
 		}
 		if wd := os.Getenv("WAYLAND_DISPLAY"); wd != "" {
-			add("--setenv", "WAYLAND_DISPLAY", wd)
+			a.add("--setenv", "WAYLAND_DISPLAY", wd)
 		}
-		add("--setenv", "XDG_RUNTIME_DIR", runtimeDir)
+		a.add("--setenv", "XDG_RUNTIME_DIR", runtimeDir)
 	}
-	add("--setenv", "PS1", `(jail) \w \$ `)
+	a.add("--setenv", "PS1", `(jail) \w \$ `)
 
 	// Assemble the inner command.
 	var inner []string
-	if landlockOn {
+	if o.landlockOn {
 		self, err := os.Executable()
 		if err != nil {
 			fatal(1, "cannot locate self: "+err.Error())
 		}
 		self, _ = filepath.EvalSymlinks(self)
-		add("--ro-bind", self, selfInJail)
-		add("--setenv", "AZKABAN_LL_RO", llJoin("RO", llRO))
-		add("--setenv", "AZKABAN_LL_ROFILES", llJoin("ROFILES", llROFiles))
-		add("--setenv", "AZKABAN_LL_RW", llJoin("RW", llRW))
-		add("--setenv", "AZKABAN_LL_RWFILES", llJoin("RWFILES", llRWFiles))
+		a.add("--ro-bind", self, selfInJail)
+		a.add("--setenv", llEnvRO, llJoin("RO", llRO))
+		a.add("--setenv", llEnvROFiles, llJoin("ROFILES", llROFiles))
+		a.add("--setenv", llEnvRW, llJoin("RW", llRW))
+		a.add("--setenv", llEnvRWFiles, llJoin("RWFILES", llRWFiles))
 		// Entries are validated (and rejected) by the landlock stage; here we only
 		// normalise the comma-separated list into the newline-separated channel.
 		// FieldsFunc drops empties, so "443,,80" and " 443, 80 " need no cleanup.
-		if ps := strings.FieldsFunc(netPorts, func(r rune) bool {
+		if ps := strings.FieldsFunc(o.netPorts, func(r rune) bool {
 			return r == ',' || unicode.IsSpace(r)
 		}); len(ps) > 0 {
-			add("--setenv", "AZKABAN_LL_PORTS", strings.Join(ps, "\n"))
+			a.add("--setenv", llEnvPorts, strings.Join(ps, "\n"))
 		}
-		inner = append([]string{selfInJail, "--landlock-exec", "--"}, cmd...)
+		inner = append([]string{selfInJail, landlockExecFlag, "--"}, cmd...)
 	} else {
 		inner = cmd
 	}
 
-	full := append(append([]string{"/usr/bin/bwrap"}, a...), "--")
+	full := append(append([]string{bwrapBin}, a...), "--")
 	full = append(full, inner...)
 
-	if dry {
+	if o.dry {
 		fmt.Println(shquote(full))
 		return
 	}
@@ -819,15 +880,15 @@ func outer(argv []string) {
 	// Resource caps, inherited across exec by bwrap and everything under it.
 	// Applied here rather than in the landlock stage so they hold under
 	// --no-landlock too. Must come after our own temp files are written.
-	if rlimits {
+	if o.rlimits {
 		applyRlimits()
 	}
 
 	c := exec.Command(full[0], append([]string{"--args", "3", "--"}, inner...)...)
 	c.ExtraFiles = []*os.File{argsFile} // becomes fd 3 in bwrap
 	c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
-	if memMax != "" {
-		if fd := setupCgroup(memMax, maxProcs); fd != nil {
+	if o.memMax != "" {
+		if fd := setupCgroup(o.memMax, maxProcs); fd != nil {
 			defer fd.Close()
 			c.SysProcAttr = &syscall.SysProcAttr{UseCgroupFD: true, CgroupFD: int(fd.Fd())}
 		}
@@ -1045,7 +1106,7 @@ func llJoin(what string, paths []string) string {
 // overlayfs (Linux >= 5.11); if the kernel refuses, bwrap fails with a clear
 // error and --persist is the way out.
 var bwrapHelp = sync.OnceValue(func() string {
-	out, _ := exec.Command("/usr/bin/bwrap", "--help").CombinedOutput()
+	out, _ := exec.Command(bwrapBin, "--help").CombinedOutput()
 	return string(out)
 })
 

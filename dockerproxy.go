@@ -204,7 +204,51 @@ func filterReason(path string, body []byte, rootReal string) string {
 	return containerReason(body, rootReal)
 }
 
-// containerReason - Returns "" if a container-create body is allowed, else why
+// containerCreateBody - The subset of Docker's container-create body the
+// filter has to understand. Only the fields that can hand out host access are
+// modelled; the rest of the body is ignored, and a body that will not parse is
+// refused rather than waved through. Written out as named types so the list of
+// what is policed can be read on its own — it is the filter's threat model,
+// and a field missing from here is a field nothing checks.
+type containerCreateBody struct {
+	HostConfig *containerHostConfig `json:"HostConfig"`
+}
+
+// containerHostConfig - The HostConfig fields that can escape the jail.
+type containerHostConfig struct {
+	Binds       []string          `json:"Binds"`
+	Mounts      []containerMount  `json:"Mounts"`
+	Privileged  bool              `json:"Privileged"`
+	Devices     []json.RawMessage `json:"Devices"`
+	CapAdd      []string          `json:"CapAdd"`
+	SecurityOpt []string          `json:"SecurityOpt"`
+	PidMode     string            `json:"PidMode"`
+	IpcMode     string            `json:"IpcMode"`
+	UsernsMode  string            `json:"UsernsMode"`
+	NetworkMode string            `json:"NetworkMode"`
+}
+
+// containerMount - One --mount entry. VolumeOptions is modelled because a
+// local-driver `device` option is a host bind mount in disguise.
+type containerMount struct {
+	Type          string               `json:"Type"`
+	Source        string               `json:"Source"`
+	VolumeOptions *containerVolumeOpts `json:"VolumeOptions"`
+}
+
+// containerVolumeOpts - The volume options of one --mount entry.
+type containerVolumeOpts struct {
+	DriverConfig *volumeDriverConfig `json:"DriverConfig"`
+}
+
+// volumeDriverConfig - A volume driver and its options, the pair that turns a
+// Type=volume mount into a host bind.
+type volumeDriverConfig struct {
+	Name    string            `json:"Name"`
+	Options map[string]string `json:"Options"`
+}
+
+// containerReason -Returns "" if a container-create body is allowed, else why
 // it is not. Everything it refuses is a way out of the container and onto the
 // host: --privileged, device passthrough, an escape-worthy capability, a
 // stripped confinement layer, a shared namespace, or a bind of a host path
@@ -213,29 +257,7 @@ func filterReason(path string, body []byte, rootReal string) string {
 // An unparsable body is refused, not waved through — a create request the
 // filter cannot read is a create request it cannot vouch for.
 func containerReason(body []byte, rootReal string) string {
-	var b struct {
-		HostConfig *struct {
-			Binds  []string `json:"Binds"`
-			Mounts []struct {
-				Type          string `json:"Type"`
-				Source        string `json:"Source"`
-				VolumeOptions *struct {
-					DriverConfig *struct {
-						Name    string            `json:"Name"`
-						Options map[string]string `json:"Options"`
-					} `json:"DriverConfig"`
-				} `json:"VolumeOptions"`
-			} `json:"Mounts"`
-			Privileged  bool              `json:"Privileged"`
-			Devices     []json.RawMessage `json:"Devices"`
-			CapAdd      []string          `json:"CapAdd"`
-			SecurityOpt []string          `json:"SecurityOpt"`
-			PidMode     string            `json:"PidMode"`
-			IpcMode     string            `json:"IpcMode"`
-			UsernsMode  string            `json:"UsernsMode"`
-			NetworkMode string            `json:"NetworkMode"`
-		} `json:"HostConfig"`
-	}
+	var b containerCreateBody
 	if err := json.Unmarshal(body, &b); err != nil {
 		return "unparsable container-create body"
 	}
@@ -243,37 +265,8 @@ func containerReason(body []byte, rootReal string) string {
 	if h == nil {
 		return ""
 	}
-	if h.Privileged {
-		return "--privileged is not allowed inside the jail"
-	}
-	if len(h.Devices) > 0 {
-		return "host device passthrough (--device) is not allowed"
-	}
-	for _, c := range h.CapAdd {
-		if dangerousCaps[strings.TrimPrefix(strings.ToUpper(c), "CAP_")] {
-			return "--cap-add " + c + " is not allowed"
-		}
-	}
-	// seccomp=unconfined / apparmor=unconfined / systempaths=unconfined /
-	// label=disable each strip a layer the container relies on to stay contained.
-	for _, so := range h.SecurityOpt {
-		if l := strings.ToLower(so); strings.Contains(l, "unconfined") || strings.Contains(l, "disable") {
-			return "--security-opt " + so + " is not allowed"
-		}
-	}
-	if escapesNamespace(h.PidMode) {
-		return "--pid=" + h.PidMode + " is not allowed"
-	}
-	if escapesNamespace(h.IpcMode) {
-		return "--ipc=" + h.IpcMode + " is not allowed"
-	}
-	if escapesNamespace(h.UsernsMode) {
-		return "--userns=" + h.UsernsMode + " is not allowed"
-	}
-	// --net=host puts the container on the host stack, which defeats --no-net and
-	// makes the otherwise-harmless NET_ADMIN cap a host firewall/sniffing primitive.
-	if escapesNamespace(h.NetworkMode) {
-		return "--network=" + h.NetworkMode + " is not allowed"
+	if reason := hostConfigReason(h); reason != "" {
+		return reason
 	}
 	for _, bind := range h.Binds {
 		if reason := bindReason(bind, rootReal); reason != "" {
@@ -293,6 +286,47 @@ func containerReason(body []byte, rootReal string) string {
 			if reason := driverDeviceReason(vo.DriverConfig.Options, rootReal); reason != "" {
 				return reason
 			}
+		}
+	}
+	return ""
+}
+
+// hostConfigReason - Returns "" if the HostConfig asks for no privilege that
+// strips a confinement layer, else why it does. Split out because these need no
+// host path to be an escape: the daemon grants them outright.
+func hostConfigReason(h *containerHostConfig) string {
+	if h.Privileged {
+		return "--privileged is not allowed inside the jail"
+	}
+	if len(h.Devices) > 0 {
+		return "host device passthrough (--device) is not allowed"
+	}
+	for _, c := range h.CapAdd {
+		if dangerousCaps[strings.TrimPrefix(strings.ToUpper(c), "CAP_")] {
+			return "--cap-add " + c + " is not allowed"
+		}
+	}
+	// seccomp=unconfined / apparmor=unconfined / systempaths=unconfined /
+	// label=disable each strip a layer the container relies on to stay contained.
+	for _, so := range h.SecurityOpt {
+		if l := strings.ToLower(so); strings.Contains(l, "unconfined") || strings.Contains(l, "disable") {
+			return "--security-opt " + so + " is not allowed"
+		}
+	}
+	// Every namespace the container can be made to SHARE with the host or with
+	// another container is an escape from the jail's own unshare. Checked as one
+	// table so a namespace added to HostConfig cannot be given a check that
+	// differs from its four siblings. --net=host is the sharpest of them: it puts
+	// the container on the host stack, which defeats --no-net and makes the
+	// otherwise-harmless NET_ADMIN cap a host firewall/sniffing primitive.
+	for _, ns := range []struct{ flag, mode string }{
+		{"pid", h.PidMode},
+		{"ipc", h.IpcMode},
+		{"userns", h.UsernsMode},
+		{"network", h.NetworkMode},
+	} {
+		if escapesNamespace(ns.mode) {
+			return "--" + ns.flag + "=" + ns.mode + " is not allowed"
 		}
 	}
 	return ""
