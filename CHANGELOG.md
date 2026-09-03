@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/fabiocicerchia/azkaban/compare/v1.0.0...v1.1.0) (2026-09-03)
+
+
+### Features
+
+* egress filtering, credential brokering, rollback, run records, `azkaban why`, and runtime capability elevation ([#45](https://github.com/fabiocicerchia/azkaban/issues/45)) ([4228d21](https://github.com/fabiocicerchia/azkaban/commit/4228d2121dde6c80839a11e722c11c9cbb077da4))
+
 ## 1.0.0 (2026-08-06)
 
 
