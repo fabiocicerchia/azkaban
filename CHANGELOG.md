@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.1](https://github.com/fabiocicerchia/azkaban/compare/v1.1.0...v1.1.1) (2026-09-04)
+
+
+### Bug Fixes
+
+* **ci:** pin the editorconfig-checker binary version ([#54](https://github.com/fabiocicerchia/azkaban/issues/54)) ([a1459a2](https://github.com/fabiocicerchia/azkaban/commit/a1459a21e13f42d3f26aa9948e4b93e20be5164c))
+
 ## [1.1.0](https://github.com/fabiocicerchia/azkaban/compare/v1.0.0...v1.1.0) (2026-09-03)
 
 
