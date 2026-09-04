@@ -1,0 +1,14 @@
+{
+  "Exclude": [
+    "^LICENSE$",
+    "^guidance\\.go$",
+    "^main\\.go$",
+    "^main_test\\.go$",
+    "^rollback\\.go$",
+    "^sandbox_test\\.go$",
+    "^why\\.go$"
+  ],
+  "Disable": {
+    "IndentSize": true
+  }
+}
