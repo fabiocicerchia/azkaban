@@ -35,7 +35,7 @@ One static binary, two roles. The outer role builds a bwrap command line from
 the allowlists at the top of `main.go`; the inner role runs inside the jail
 and adds the layer bwrap cannot:
 
-```
+```text
   azkaban [flags] [--] <command> [args...]
       │
       │  outer role — on the host
@@ -348,12 +348,12 @@ exception, or `--ro`/`--rw` for one run.
 
 ## Documentation
 
-| Page | Covers |
-|---|---|
-| [design.md](docs/design.md) | The five layers in detail, plus the security model and deliberate omissions |
-| [configuration.md](docs/configuration.md) | `~/.config/azkaban/config`, credential masking, environment allowlist |
-| [containers.md](docs/containers.md) | Docker/podman sockets and the filtering proxy |
-| [testing.md](docs/testing.md) | How the suite proves containment without risking a real home |
+| Page                                      | Covers                                                                      |
+| ----------------------------------------- | --------------------------------------------------------------------------- |
+| [design.md](docs/design.md)               | The five layers in detail, plus the security model and deliberate omissions |
+| [configuration.md](docs/configuration.md) | `~/.config/azkaban/config`, credential masking, environment allowlist       |
+| [containers.md](docs/containers.md)       | Docker/podman sockets and the filtering proxy                               |
+| [testing.md](docs/testing.md)             | How the suite proves containment without risking a real home                |
 
 ## References
 

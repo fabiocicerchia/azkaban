@@ -15,7 +15,7 @@ tmpfs and a tight allowlist is bound back (`~/.config`, `~/.cache`, `~/.claude`,
 `~/.gnupg`, sibling projects) is simply invisible. The host environment is
 cleared, and no container socket is bound unless you ask for one.
 
-```
+```text
 --no-gpu       do not bind GPU devices
 --persist      let $HOME writes really land (default: discard them, see below)
 --persist-path P
