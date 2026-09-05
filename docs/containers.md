@@ -20,13 +20,13 @@ of the `--bind-*` flags is required alongside it. It deliberately does not imply
 a runtime: handing over an unfiltered socket — quite possibly the rootful one —
 should not be the thing that happens when you never named a runtime at all.
 
-| Runtime | Status |
-|---|---|
-| docker (rootless) | supported, filtered |
-| docker (rootful) | supported, filtered, warns loudly — the daemon is host root |
-| podman | supported via its **Docker-compatible** API; the native `libpod` API is refused |
-| containerd / nerdctl | **not offered** — gRPC, which this HTTP proxy cannot inspect |
-| kubernetes | out of scope; `~/.kube` is not on any allowlist, keep it that way |
+| Runtime              | Status                                                                          |
+| -------------------- | ------------------------------------------------------------------------------- |
+| docker (rootless)    | supported, filtered                                                             |
+| docker (rootful)     | supported, filtered, warns loudly — the daemon is host root                     |
+| podman               | supported via its **Docker-compatible** API; the native `libpod` API is refused |
+| containerd / nerdctl | **not offered** — gRPC, which this HTTP proxy cannot inspect                    |
+| kubernetes           | out of scope; `~/.kube` is not on any allowlist, keep it that way               |
 
 ## Two layers of defence
 

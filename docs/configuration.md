@@ -9,7 +9,7 @@ Everything below is optional. azkaban runs with no config file.
 `~/.config/azkaban/config` — one directive per line, `#` comments, blank lines
 ignored. Paths are `$HOME`-relative unless absolute.
 
-```
+```text
 # ~/.config/azkaban/config
 ro  /etc/ssl/certs          # bind read-only
 rw  /srv/shared-cache       # bind read-write (overlaid like the rest)
@@ -49,7 +49,7 @@ allowlist directory really destroyable again. `persist PATH` is the per-path
 form — that one path is bound to the real host inode, everything else stays a
 throwaway overlay.
 
-```
+```text
 # ~/.config/azkaban/config
 persist .claude/.credentials.json
 ```
@@ -83,7 +83,7 @@ is a throwaway copy and every write to it is dropped on exit. Persist the token
 and watch the account state revert on the next run, and Claude Code asks you to
 log in again with a perfectly good token sitting on disk.
 
-```
+```text
 # ~/.config/azkaban/config
 persist .claude/.credentials.json
 persist .claude.json
@@ -110,7 +110,7 @@ is gone the moment the jail exits and `claude --resume <id>` answers "No
 conversation found". This one has to be the *directory* — the session file's name
 is not known in advance:
 
-```
+```text
 persist .claude/projects
 ```
 
@@ -136,11 +136,11 @@ What crosses is also **not the real agent socket**. The jail is pointed at a
 filtering proxy in the outer process, which speaks the agent protocol and
 forwards exactly two requests:
 
-| message | | |
-| --- | --- | --- |
-| `SSH_AGENTC_REQUEST_IDENTITIES` | 11 | list the public keys — **forwarded** |
-| `SSH_AGENTC_SIGN_REQUEST` | 13 | sign this blob — **forwarded** |
-| `ADD_IDENTITY`, `REMOVE_IDENTITY`, `REMOVE_ALL_IDENTITIES`, `LOCK`, `UNLOCK`, extensions | 17-27 | **refused** |
+| message                                                                                  |       |                                      |
+| ---------------------------------------------------------------------------------------- | ----- | ------------------------------------ |
+| `SSH_AGENTC_REQUEST_IDENTITIES`                                                          | 11    | list the public keys — **forwarded** |
+| `SSH_AGENTC_SIGN_REQUEST`                                                                | 13    | sign this blob — **forwarded**       |
+| `ADD_IDENTITY`, `REMOVE_IDENTITY`, `REMOVE_ALL_IDENTITIES`, `LOCK`, `UNLOCK`, extensions | 17-27 | **refused**                          |
 
 The refusals are the part that changed. With the socket bound raw, one
 `ssh-add -D` inside the jail removes every key you have loaded, and one
@@ -252,7 +252,7 @@ nothing to stop them being read, and azkaban does not filter network egress.
 
 So these are masked with an empty tmpfs or empty file, bound last so they win:
 
-```
+```text
 ~/.config/gh            ~/.config/gcloud        ~/.config/doctl
 ~/.config/hub           ~/.config/git/credentials
 ~/.config/containers/auth.json                  ~/.docker/config.json
@@ -262,7 +262,7 @@ So these are masked with an empty tmpfs or empty file, bound last so they win:
 To keep one — say you genuinely want `gh` working in the jail — name it with
 `ro` or `rw` and it is left alone. No extra syntax:
 
-```
+```text
 ro .config/gh
 ```
 
