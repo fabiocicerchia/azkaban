@@ -90,3 +90,11 @@ test-docker: ## Also run the docker-socket integration tests (needs a daemon + a
 cover: ## Run tests and write a coverage profile to coverage.out
 	$(GO) test -count=1 -coverprofile=coverage.out ./...
 	$(GO) tool cover -func=coverage.out | tail -1
+
+.PHONY: format
+format: ## Rewrite the sources to gofmt form
+	gofmt -w .
+
+.PHONY: analyze
+analyze: ## Lint with the house rule set
+	golangci-lint run ./...
