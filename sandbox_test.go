@@ -156,7 +156,8 @@ func TestWrite_CrossDirectoryLinkAndRename(t *testing.T) {
 	e := newEnv(t)
 	r := e.run(t, nil, ""+
 		// npm's cacache: hardlink a temp file into a sibling directory.
-		probe("link", `mkdir -p "$HOME/.cache/a" "$HOME/.cache/b" && : > "$HOME/.cache/a/f" && ln "$HOME/.cache/a/f" "$HOME/.cache/b/f" 2>/dev/null`)+
+		probe("link", `mkdir -p "$HOME/.cache/a" "$HOME/.cache/b" && : > "$HOME/.cache/a/f" && ln "$HOME/.cache/a/f" `+
+			`"$HOME/.cache/b/f" 2>/dev/null`)+
 		// Crossing between two separately allowed trees is still inside the set.
 		probe("rename", `: > ./mv-probe && mv ./mv-probe /tmp/mv-probe 2>/dev/null`)+
 		// Read-only destination: refer on one end is not enough.
@@ -173,7 +174,8 @@ func TestWrite_CrossDirectoryLinkAndRename(t *testing.T) {
 
 func TestDestruction_HiddenDataSurvivesRecursiveDelete(t *testing.T) {
 	e := newEnv(t)
-	e.run(t, nil, `rm -rf "$HOME"/.ssh "$HOME"/.aws "$HOME"/.gnupg "$HOME"/Documents "$HOME"/sibling-project 2>/dev/null; echo done`)
+	e.run(t, nil,
+		`rm -rf "$HOME"/.ssh "$HOME"/.aws "$HOME"/.gnupg "$HOME"/Documents "$HOME"/sibling-project 2>/dev/null; echo done`)
 
 	e.mustContain(t, ".ssh/id_rsa", decoys[".ssh/id_rsa"])
 	e.mustContain(t, ".aws/credentials", decoys[".aws/credentials"])
@@ -293,7 +295,8 @@ func TestPersistPath_OneFileSurvivesTheOverlay(t *testing.T) {
 			// Atomic-save shape: many CLIs write a temp file and rename over the
 			// target. rename(2) onto a bind MOUNTPOINT fails with EBUSY, so a tool
 			// that saves this way needs the directory persisted, not the file.
-			probe("rename", `sh -c 'echo x > "$HOME/.claude/.tmp" && mv "$HOME/.claude/.tmp" "$HOME/.claude/.credentials.json"' 2>/dev/null`)+
+			probe("rename", `sh -c 'echo x > "$HOME/.claude/.tmp" && mv "$HOME/.claude/.tmp" `+
+				`"$HOME/.claude/.credentials.json"' 2>/dev/null`)+
 			// Everything else in the same directory is still throwaway.
 			`echo edited > "$HOME/.claude/settings.json"`)
 
@@ -621,7 +624,8 @@ func TestEnv_HostSecretsAreCleared(t *testing.T) {
 		"GITHUB_TOKEN=ghp-must-not-leak",
 		"SSH_AUTH_SOCK=/run/user/1000/keyring/ssh",
 	}
-	r := e.run(t, nil, `echo "k=[$ANTHROPIC_API_KEY] g=[$GITHUB_TOKEN] a=[$AWS_SECRET_ACCESS_KEY] s=[$SSH_AUTH_SOCK]"`, secrets...)
+	r := e.run(t, nil, `echo "k=[$ANTHROPIC_API_KEY] g=[$GITHUB_TOKEN] a=[$AWS_SECRET_ACCESS_KEY] s=[$SSH_AUTH_SOCK]"`,
+		secrets...)
 	if !r.has("k=[] g=[] a=[] s=[]") {
 		t.Errorf("host secrets leaked into the jail: %q", r.stdout)
 	}
@@ -792,7 +796,8 @@ func TestUserns_NestingIsBlockedByDefault(t *testing.T) {
 	if _, err := os.Stat("/usr/bin/python3"); err != nil {
 		t.Skip("no /usr/bin/python3")
 	}
-	probe := `/usr/bin/python3 -c 'import ctypes;print("NESTED-OK" if ctypes.CDLL("libc.so.6").unshare(0x10000000)==0 else "blocked")'`
+	probe := `/usr/bin/python3 -c 'import ctypes;print("NESTED-OK" if ctypes.CDLL("libc.so.6").unshare(0x10000000)==0 ` +
+		`else "blocked")'`
 	if r := e.run(t, nil, probe); r.has("NESTED-OK") {
 		t.Error("a nested user namespace was created despite --disable-userns")
 	}
@@ -941,7 +946,8 @@ func TestExtraBinds_PerRunFlags(t *testing.T) {
 	}
 	// Not covered by mustContain below: the default overlay leaves the host copy
 	// untouched for a *writable* bind too, so only an in-jail failure proves "ro".
-	if r := e.run(t, []string{"--ro", "extra"}, `echo x > "$HOME/extra/f" 2>/dev/null && echo WROTE; echo "[end]"`); r.has("WROTE") {
+	writeProbe := `echo x > "$HOME/extra/f" 2>/dev/null && echo WROTE; echo "[end]"`
+	if r := e.run(t, []string{"--ro", "extra"}, writeProbe); r.has("WROTE") {
 		t.Error("--ro bind accepted a write")
 	}
 	e.mustContain(t, "extra/f", "VISIBLE")

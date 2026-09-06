@@ -162,7 +162,8 @@ func decide(path, op, home, cwd string, uc userConf, overlay bool) verdict {
 
 	if top == nil {
 		v.Decision, v.Mechanism, v.Rule = "absent", "--tmpfs "+home, "default deny"
-		v.Detail = "$HOME is an empty tmpfs in the jail and nothing on any allowlist covers this path, so it does not exist there — a read fails as ENOENT, not EACCES"
+		v.Detail = "$HOME is an empty tmpfs in the jail and nothing on any allowlist covers this path, so it does not " +
+			"exist there — a read fails as ENOENT, not EACCES"
 		return v
 	}
 
@@ -170,11 +171,13 @@ func decide(path, op, home, cwd string, uc userConf, overlay bool) verdict {
 	case "mask":
 		v.Decision, v.Mechanism = "denied", "masked (empty tmpfs or empty file)"
 		v.Rule = top.list + " " + top.rel
-		v.Detail = "a credential store inside a wholesale-bound directory; the jail sees it empty. Name it with `ro " + top.rel + "` in " + azkabanCfgDir + "/config to keep it"
+		v.Detail = "a credential store inside a wholesale-bound directory; the jail sees it empty. " +
+			"Name it with `ro " + top.rel + "` in " + azkabanCfgDir + "/config to keep it"
 	case "freeze":
 		v.Decision = allowIf(op == "read")
 		v.Mechanism, v.Rule = "--ro-bind (re-bound after the rw list)", top.list+" "+top.rel
-		v.Detail = "frozen on purpose: it steers a tool into running code on the next invocation, so a writable parent must not be usable to rewrite it"
+		v.Detail = "frozen on purpose: it steers a tool into running code on the next invocation, so a writable parent " +
+			"must not be usable to rewrite it"
 	case "ro":
 		v.Decision = allowIf(op == "read")
 		v.Mechanism, v.Rule = "--ro-bind", top.list+" "+top.rel
@@ -190,7 +193,8 @@ func decide(path, op, home, cwd string, uc userConf, overlay bool) verdict {
 		v.Survives = &survives
 		if overlay {
 			v.Mechanism = "--overlay-src + --tmp-overlay (throwaway tmpfs upper layer)"
-			v.Detail = "writable, but every write and every delete evaporates on exit; the host copy is untouched. `--persist` or `persist " + top.rel + "` makes it real"
+			v.Detail = "writable, but every write and every delete evaporates on exit; " +
+				"the host copy is untouched. `--persist` or `persist " + top.rel + "` makes it real"
 		} else {
 			v.Mechanism = "--bind (--persist: real writes)"
 			v.Detail = "writes land on the host, and so do deletes"
@@ -273,7 +277,8 @@ func decideNet(host string, port int, noNet bool, netPorts string, landlock bool
 	}
 	if netPorts == "" {
 		v.Decision, v.Mechanism, v.Rule = "allowed", "no egress filter", "default"
-		v.Detail = "outbound TCP is unrestricted. azkaban has no host or domain allowlist — only --net-ports, and only over ports"
+		v.Detail = "outbound TCP is unrestricted. azkaban has no host or domain allowlist — only --net-ports, and only " +
+			"over ports"
 		return v
 	}
 	if !landlock {
@@ -283,7 +288,8 @@ func decideNet(host string, port int, noNet bool, netPorts string, landlock bool
 	}
 	if host != "" && port == 0 {
 		v.Decision, v.Mechanism, v.Rule = "allowed", "not filtered", "--net-ports "+netPorts
-		v.Detail = "hosts are never filtered: --net-ports restricts TCP ports at the kernel and cannot express a hostname. Ask again with --port"
+		v.Detail = "hosts are never filtered: --net-ports restricts TCP ports at the kernel and cannot express a hostname. " +
+			"Ask again with --port"
 		return v
 	}
 	allowed := slices.Contains(splitPorts(netPorts), port)
@@ -292,7 +298,8 @@ func decideNet(host string, port int, noNet bool, netPorts string, landlock bool
 	if allowed {
 		v.Detail = "the port is on the list. The host is not checked — azkaban cannot express a host allowlist"
 	} else {
-		v.Detail = "the port is not on the list, so connect(2) is refused by the kernel. UDP, and therefore DNS, is unaffected either way"
+		v.Detail = "the port is not on the list, so connect(2) is refused by the kernel. UDP, and therefore DNS, is " +
+			"unaffected either way"
 	}
 	return v
 }
@@ -318,18 +325,22 @@ func systemVerdict(p, op string) verdict {
 		v.Detail = "a fresh tmpfs per run; nothing written here survives the jail"
 	case p == "/run" || under(p, "/run"):
 		v.Decision, v.Mechanism, v.Rule = "absent", "--tmpfs /run", "base layout"
-		v.Detail = "/run is an empty tmpfs. --display binds a few sockets back; everything else there, including ssh-agent, gpg-agent and rootless container sockets, stays hidden"
+		v.Detail = "/run is an empty tmpfs. --display binds a few sockets back; everything else there, including " +
+			"ssh-agent, gpg-agent and rootless container sockets, stays hidden"
 	case p == "/proc" || under(p, "/proc"):
 		v.Decision, v.Mechanism, v.Rule = allowIf(op == "read"), "--proc /proc", "base layout"
 	case p == "/dev" || under(p, "/dev"):
 		v.Decision, v.Mechanism, v.Rule = "allowed", "--dev /dev", "base layout"
-		v.Detail = "a minimal device set. Landlock allows writes only to the handful of nodes programs actually write (null, zero, tty, pts, shm, ...), not to /dev wholesale"
+		v.Detail = "a minimal device set. Landlock allows writes only to the handful of nodes programs actually write " +
+			"(null, zero, tty, pts, shm, ...), not to /dev wholesale"
 	case isSystemRO(p):
 		v.Decision = allowIf(op == "read")
 		v.Mechanism, v.Rule = "--ro-bind", "base layout"
 	default:
 		v.Decision, v.Mechanism, v.Rule = "absent", "not bound", "default deny"
-		v.Detail = "outside $HOME, only /usr /etc /opt /sys /proc /dev /run /tmp and the working directory are bound. Add it for one run with --ro/--rw, or for every run in " + azkabanCfgDir + "/config"
+		v.Detail = "outside $HOME, only /usr /etc /opt /sys /proc /dev /run /tmp and the working " +
+			"directory are bound. Add it for one run with --ro/--rw, or for every run in " + azkabanCfgDir +
+			"/config"
 	}
 	if v.Decision != "absent" && !exists(p) {
 		v.Decision = "absent"
@@ -499,7 +510,8 @@ func decideSelf(path, op string, jp jailPolicy) verdict {
 	switch kind {
 	case "":
 		v.Decision, v.Mechanism, v.Rule = "absent", "not mounted", "default deny"
-		v.Detail = "this path is not in the jail at all. It may well exist on the host — that is not something you can reach from here, and creating it will not help"
+		v.Detail = "this path is not in the jail at all. It may well exist on the host — that is not something you can " +
+			"reach from here, and creating it will not help"
 	case "project":
 		v.Decision, v.Mechanism, v.Rule, v.Survives = "allowed", "bound read-write", "the project directory", &yes
 		v.Detail = "the one place writes really persist"

@@ -88,9 +88,13 @@ func TestFilterReasonContainer(t *testing.T) {
 		// Bind-in-disguise: a local-driver volume mounted inline at container
 		// create, with a device opt pointing outside cwd. Must be denied even
 		// though its Type is "volume", not "bind" (regression for the filter gap).
-		{"mount volume device outside", `{"HostConfig":{"Mounts":[{"Type":"volume","VolumeOptions":{"DriverConfig":{"Name":"local","Options":{"type":"none","o":"bind","device":"/etc"}}}}]}}`, true},
-		{"mount volume device inside", `{"HostConfig":{"Mounts":[{"Type":"volume","VolumeOptions":{"DriverConfig":{"Name":"local","Options":{"type":"none","o":"bind","device":"` + inside + `"}}}}]}}`, false},
-		{"mount volume no device", `{"HostConfig":{"Mounts":[{"Type":"volume","VolumeOptions":{"DriverConfig":{"Name":"local","Options":{"foo":"bar"}}}}]}}`, false},
+		{"mount volume device outside", `{"HostConfig":{"Mounts":[{"Type":"volume",` +
+			`"VolumeOptions":{"DriverConfig":{"Name":"local","Options":{"type":"none","o":"bind","device":"/etc"}}}}]}}`, true},
+		{"mount volume device inside", `{"HostConfig":{"Mounts":[{"Type":"volume",` +
+			`"VolumeOptions":{"DriverConfig":{"Name":"local","Options":{"type":"none","o":"bind",` +
+			`"device":"` + inside + `"}}}}]}}`, false},
+		{"mount volume no device", `{"HostConfig":{"Mounts":[{"Type":"volume",` +
+			`"VolumeOptions":{"DriverConfig":{"Name":"local","Options":{"foo":"bar"}}}}]}}`, false},
 		{"privileged", `{"HostConfig":{"Privileged":true}}`, true},
 		{"device", `{"HostConfig":{"Devices":[{"PathOnHost":"/dev/sda"}]}}`, true},
 		{"cap sys_admin", `{"HostConfig":{"CapAdd":["SYS_ADMIN"]}}`, true},

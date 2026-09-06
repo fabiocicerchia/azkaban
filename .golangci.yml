@@ -13,6 +13,8 @@ linters:
     - errname
     - exhaustive
     - gocritic
+    - lll               # FC-GEN-045 - 120 columns. gofmt does not wrap, so
+                        # nothing else here holds the line.
     - revive
     - testifylint
     - unconvert
@@ -21,6 +23,8 @@ linters:
     - wastedassign
 
   settings:
+    lll:
+      line-length: 120
     errcheck:
       check-type-assertions: true
       check-blank: true         # FC-GO-007 - a discarded error must be explicit

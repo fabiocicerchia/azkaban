@@ -484,7 +484,8 @@ func parseFlags(argv []string) (o jailOpts, cmd []string, done bool) {
 	case *fDocker:
 		o.socketKind = "docker"
 	case o.rawSock:
-		fatal(2, "--unfiltered-container-socket says how to bind the socket, not which one: add --bind-docker or --bind-podman")
+		fatal(2,
+			"--unfiltered-container-socket says how to bind the socket, not which one: add --bind-docker or --bind-podman")
 	}
 
 	cmd = fs.Args()
@@ -529,7 +530,9 @@ func outer(argv []string) {
 		fatal(2, "refusing to run: cwd is / — only a project dir should be writable. cd into the project first.")
 	}
 	if cwd == home || strings.HasPrefix(home, cwd+string(os.PathSeparator)) {
-		fatal(2, "refusing to run: cwd ("+cwd+") contains $HOME — only the project dir should be writable. cd into the project first.")
+		fatal(2,
+			"refusing to run: cwd ("+cwd+") contains $HOME — only the project dir should be writable. cd into the project "+
+				"first.")
 	}
 	uid := os.Getuid()
 	runtimeDir := fmt.Sprintf("/run/user/%d", uid)
@@ -705,7 +708,9 @@ func outer(argv []string) {
 		sockForJail := realSock // path bound FROM the host
 		switch {
 		case o.rawSock:
-			auditLog.degraded("unfiltered-container-socket", "--unfiltered-container-socket binds the UNFILTERED socket; `docker run -v /:/h` can read/write everything your user owns.")
+			auditLog.degraded("unfiltered-container-socket",
+				"--unfiltered-container-socket binds the UNFILTERED socket; "+
+					"`docker run -v /:/h` can read/write everything your user owns.")
 		case !o.dry:
 			ps, err := startDockerFilterProxy(realSock, cwd)
 			if err != nil {
@@ -715,7 +720,9 @@ func outer(argv []string) {
 		default:
 			// --dry-run exists to be audited, so do not let it imply the raw
 			// socket is what gets bound.
-			fmt.Fprintln(os.Stderr, "azkaban: note: --dry-run prints the RAW socket as the bind source; a real run substitutes the filtering proxy socket there.")
+			fmt.Fprintln(os.Stderr,
+				"azkaban: note: --dry-run prints the RAW socket as the bind source; a real run substitutes the filtering proxy "+
+					"socket there.")
 		}
 		a.add("--bind", sockForJail, realSock)
 		a.add("--setenv", "DOCKER_HOST", "unix://"+realSock)
@@ -785,7 +792,9 @@ func outer(argv []string) {
 	// --persist turns it off for the runs where writes are meant to survive.
 	// Note the project dir is NEVER overlaid; it is the workspace, and it has git.
 	if o.overlay && !bwrapHas("--tmp-overlay") {
-		auditLog.degraded("no-tmp-overlay", "this bwrap has no --tmp-overlay; falling back to real writes. Upgrade bubblewrap (>= 0.9) or pass --persist to silence this.")
+		auditLog.degraded("no-tmp-overlay",
+			"this bwrap has no --tmp-overlay; falling back to real writes. Upgrade bubblewrap (>= 0.9) or pass --persist to "+
+				"silence this.")
 		o.overlay = false
 	}
 	for _, rel := range slices.Concat(rwPaths, uc.rw) {
@@ -1489,7 +1498,9 @@ func warnTIOCSTI() {
 	if fi, err := os.Stdin.Stat(); err != nil || fi.Mode()&os.ModeCharDevice == 0 {
 		return // not on a terminal, nothing to inject into
 	}
-	auditLog.degraded("tiocsti-permissive", "this kernel allows TIOCSTI; the jail shares your terminal and can inject commands your shell runs after it exits. Close it host-wide with: sysctl -w dev.tty.legacy_tiocsti=0")
+	auditLog.degraded("tiocsti-permissive",
+		"this kernel allows TIOCSTI; the jail shares your terminal and can inject commands your shell runs after it exits. "+
+			"Close it host-wide with: sysctl -w dev.tty.legacy_tiocsti=0")
 }
 
 // Resource caps. The default overlay puts writes in a tmpfs, i.e. in RAM, which
@@ -1607,7 +1618,8 @@ func setupCgroup(memMax string, pidsMax int) *os.File {
 		// Measured: 256 MiB allocated fine under a 64 MiB cap until swap was
 		// disabled for the group.
 		if err := os.WriteFile(filepath.Join(dir, "memory.swap.max"), []byte("0"), 0o644); err != nil {
-			auditLog.degraded("cgroup-swap", "could not disable swap for the cgroup; --mem-max will page out rather than refuse.")
+			auditLog.degraded("cgroup-swap",
+				"could not disable swap for the cgroup; --mem-max will page out rather than refuse.")
 		}
 	}
 	if pidsMax > 0 {

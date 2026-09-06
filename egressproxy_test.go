@@ -166,7 +166,8 @@ func TestEgressProxyEndToEnd(t *testing.T) {
 	if code, _ := do("allowed.example:443", ""); code != http.StatusProxyAuthRequired {
 		t.Errorf("no token = %d, want 407", code)
 	}
-	if code, _ := do("allowed.example:443", "Basic "+base64.StdEncoding.EncodeToString([]byte("azkaban:wrong"))); code != http.StatusProxyAuthRequired {
+	wrongAuth := "Basic " + base64.StdEncoding.EncodeToString([]byte("azkaban:wrong"))
+	if code, _ := do("allowed.example:443", wrongAuth); code != http.StatusProxyAuthRequired {
 		t.Errorf("wrong token = %d, want 407", code)
 	}
 	code, body := do("blocked.example:443", auth)
