@@ -24,6 +24,7 @@ package main
 
 import (
 	"cmp"
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -39,9 +40,10 @@ import (
 	"syscall"
 	"unicode"
 
+	"time"
+
 	"github.com/landlock-lsm/go-landlock/landlock"
 	"golang.org/x/sys/unix"
-	"time"
 )
 
 // --------------------------------------------------------------------------- //
@@ -260,6 +262,8 @@ func landlockStage(args []string) {
 	// A failure here is fatal rather than a warning: --elevate asked for a
 	// supervisor, and a run that silently did not get one is the same class of
 	// silent no-op that --mem-max used to be.
+	//nolint:forbidigo // this is how the inner stage learns its descriptor:
+	// azkaban sets it on the re-exec and reads it back on the other side
 	if fd := os.Getenv(elevateFDEnv); fd != "" {
 		sock, err := strconv.Atoi(fd)
 		if err != nil {
@@ -274,8 +278,8 @@ func landlockStage(args []string) {
 		}
 		// The supervisor holds the only copy from here on. Keeping ours would
 		// mean the jail could answer its own notifications.
-		syscall.Close(listener)
-		syscall.Close(sock)
+		syscall.Close(listener) //nolint:errcheck // closing a descriptor this process is finished with
+		syscall.Close(sock)     //nolint:errcheck // closing a descriptor this process is finished with
 	}
 
 	cfg := landlock.V5.BestEffort()
@@ -485,6 +489,9 @@ func parseFlags(argv []string) (o jailOpts, cmd []string, done bool) {
 
 	cmd = fs.Args()
 	if len(cmd) == 0 {
+		//nolint:forbidigo // the caller's session is the input here, read at the
+		// point the decision is made; azkaban re-execs inside the jail, where a
+		// startup snapshot of the outer environment would be the wrong answer
 		if sh := os.Getenv("SHELL"); sh != "" {
 			cmd = []string{sh}
 		} else {
@@ -506,8 +513,14 @@ func outer(argv []string) {
 		return
 	}
 
-	home, _ := os.UserHomeDir()
-	cwd, _ := os.Getwd()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		fatal(2, "cannot determine $HOME ("+err.Error()+"); every bind below is decided from it")
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		fatal(2, "cannot determine the working directory ("+err.Error()+"); it is what gets bound read-write")
+	}
 	// cwd is bound read-write; if it IS $HOME (or an ancestor of it) the whole
 	// home becomes writable/deletable inside the jail. Refuse — accidental rm
 	// protection is the point. The cwd == "/" case is special-cased because
@@ -532,6 +545,8 @@ func outer(argv []string) {
 
 	// --dry-run changes nothing, so there is nothing to record; recording it
 	// would fill the directory with runs that never happened.
+	//nolint:forbidigo // read once, here, and passed in: the auditor measures
+	// the run's duration against this same value
 	auditLog = startAudit(!o.noAudit && !uc.auditOff && !o.dry, time.Now())
 	defer auditLog.close(0)
 	auditLog.event("start", map[string]any{
@@ -590,6 +605,7 @@ func outer(argv []string) {
 	// root-owned file reads as nobody (65534) inside the jail and every
 	// /etc/ssh/ssh_config.d drop-in trips that check — `git push` over ssh dies
 	// before it opens a socket. Re-serve the same bytes from a file we own.
+	//nolint:errcheck // a literal pattern: Glob only fails on a malformed one
 	sshDropIns, _ := filepath.Glob("/etc/ssh/ssh_config.d/*.conf")
 	for _, p := range sshDropIns {
 		// Bind at the symlink's TARGET: these drop-ins are usually symlinks into
@@ -642,7 +658,7 @@ func outer(argv []string) {
 	// GPU passthrough. Landlock now denies /dev writes by default, so each device
 	// that is bound must also be granted explicitly or the GPU is unusable.
 	if o.gpu {
-		devs, _ := filepath.Glob("/dev/nvidia*")
+		devs, _ := filepath.Glob("/dev/nvidia*") //nolint:errcheck // a literal pattern: Glob only fails on a malformed one
 		devs = append(devs, "/dev/dri")
 		for _, d := range devs {
 			if !exists(d) {
@@ -676,12 +692,12 @@ func outer(argv []string) {
 				break
 			}
 		}
-		switch {
-		case realSock == "":
+		switch realSock {
+		case "":
 			fatal(1, "no "+o.socketKind+" socket found (looked in "+
 				strings.Join(containerSockets[o.socketKind], ", ")+
 				"). containerd is not offered: it speaks gRPC, which the filtering proxy cannot inspect.")
-		case realSock == "/var/run/docker.sock" || realSock == "/run/podman/podman.sock":
+		case "/var/run/docker.sock", "/run/podman/podman.sock":
 			auditLog.degraded("rootful-container-socket", "no rootless "+o.socketKind+
 				"; using ROOTFUL "+realSock+" = host root inside the jail. Set up a rootless daemon to close this.")
 		}
@@ -720,6 +736,9 @@ func outer(argv []string) {
 		if exists("/tmp/.X11-unix") {
 			a.add("--bind", "/tmp/.X11-unix", "/tmp/.X11-unix")
 		}
+		//nolint:forbidigo // the caller's session is the input here, read at the
+		// point the decision is made; azkaban re-execs inside the jail, where a
+		// startup snapshot of the outer environment would be the wrong answer
 		if xa := os.Getenv("XAUTHORITY"); xa != "" && exists(xa) {
 			a.add("--ro-bind", xa, xa)
 		}
@@ -731,6 +750,7 @@ func outer(argv []string) {
 			a.add("--tmpfs", runtimeDir)
 			llRW = append(llRW, runtimeDir)
 			for _, pat := range displaySockets {
+				//nolint:errcheck // a literal pattern: Glob only fails on a malformed one
 				ms, _ := filepath.Glob(filepath.Join(runtimeDir, pat))
 				for _, m := range ms {
 					a.add("--bind", m, m)
@@ -871,6 +891,9 @@ func outer(argv []string) {
 	// `ssh-add -c` on the host narrows it further, to one confirmation prompt per
 	// signature. Bound after the $HOME tmpfs and the mask loop so both binds win.
 	if o.sshAgent {
+		//nolint:forbidigo // the caller's session is the input here, read at the
+		// point the decision is made; azkaban re-execs inside the jail, where a
+		// startup snapshot of the outer environment would be the wrong answer
 		sock := os.Getenv("SSH_AUTH_SOCK")
 		switch {
 		case sock == "":
@@ -965,7 +988,12 @@ func outer(argv []string) {
 	// and rewrite cmd[0] to the absolute path so no in-jail $PATH lookup is
 	// needed. Bound last so it overlays the home tmpfs.
 	if binPath, err := exec.LookPath(cmd[0]); err == nil {
-		binPath, _ = filepath.EvalSymlinks(binPath)
+		// EvalSymlinks returns "" on failure, and binding "" would produce a
+		// jail with no target binary at all. An unresolvable path is still the
+		// path LookPath found.
+		if resolved, err := filepath.EvalSymlinks(binPath); err == nil {
+			binPath = resolved
+		}
 		a.add("--ro-bind", binPath, binPath)
 		llROFiles = append(llROFiles, binPath)
 		cmd[0] = binPath
@@ -1009,10 +1037,14 @@ func outer(argv []string) {
 
 	// Environment.
 	if o.display {
+		//nolint:forbidigo // the display the caller is on is what gets forwarded;
+		// the three reads below are the same decision
 		a.add("--setenv", "DISPLAY", cmp.Or(os.Getenv("DISPLAY"), ":0"))
+		//nolint:forbidigo // see above
 		if xa := os.Getenv("XAUTHORITY"); xa != "" {
 			a.add("--setenv", "XAUTHORITY", xa)
 		}
+		//nolint:forbidigo // see above
 		if wd := os.Getenv("WAYLAND_DISPLAY"); wd != "" {
 			a.add("--setenv", "WAYLAND_DISPLAY", wd)
 		}
@@ -1025,6 +1057,8 @@ func outer(argv []string) {
 	var rbSession *rollbackSession
 	if o.rollback && !o.dry {
 		roots := presentUnder(home, slices.Concat(rwPaths, uc.rw))
+		//nolint:forbidigo // stamping when this happened; the record is the
+		// only consumer and a jail runs once
 		start := time.Now().UTC()
 		before, err := takeSnapshot(roots, rollbackStore())
 		if err != nil {
@@ -1138,7 +1172,11 @@ func outer(argv []string) {
 		if err != nil {
 			fatal(1, "cannot locate self: "+err.Error())
 		}
-		self, _ = filepath.EvalSymlinks(self)
+		// As with the target binary: "" would bind nothing at selfInJail and
+		// the landlock stage would have no executable to re-exec.
+		if resolved, err := filepath.EvalSymlinks(self); err == nil {
+			self = resolved
+		}
 		a.add("--ro-bind", self, selfInJail)
 		a.add("--setenv", llEnvRO, llJoin("RO", llRO))
 		a.add("--setenv", llEnvROFiles, llJoin("ROFILES", llROFiles))
@@ -1263,7 +1301,7 @@ func outer(argv []string) {
 	if _, err := argsFile.Seek(0, 0); err != nil {
 		fatal(1, "args file: "+err.Error())
 	}
-	defer argsFile.Close()
+	defer argsFile.Close() //nolint:errcheck // closing on the way out; a failed close has nothing left to report
 
 	// Resource caps, inherited across exec by bwrap and everything under it.
 	// Applied here rather than in the landlock stage so they hold under
@@ -1272,12 +1310,15 @@ func outer(argv []string) {
 		applyRlimits()
 	}
 
-	c := exec.Command(full[0], append([]string{"--args", "3", "--"}, inner...)...)
+	// context.Background(), deliberately: azkaban is one process supervising one
+	// child, and the only cancellation it has is the signal handler that cleans up
+	// and re-raises.
+	c := exec.CommandContext(context.Background(), full[0], append([]string{"--args", "3", "--"}, inner...)...)
 	c.ExtraFiles = []*os.File{argsFile} // becomes fd 3 in bwrap
 	c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
 	if o.memMax != "" {
 		if fd := setupCgroup(o.memMax, maxProcs); fd != nil {
-			defer fd.Close()
+			defer fd.Close() //nolint:errcheck // closing on the way out; a failed close has nothing left to report
 			c.SysProcAttr = &syscall.SysProcAttr{UseCgroupFD: true, CgroupFD: int(fd.Fd())}
 		}
 	}
@@ -1295,6 +1336,7 @@ func outer(argv []string) {
 		supSock = os.NewFile(uintptr(pair[0]), "azkaban-elevate")
 		jailSock = os.NewFile(uintptr(pair[1]), "azkaban-elevate-jail")
 		c.ExtraFiles = append(c.ExtraFiles, jailSock) // fd 4 in bwrap
+		//nolint:errcheck // closing on the way out; a failed close has nothing left to report
 		defer supSock.Close()
 	}
 
@@ -1305,7 +1347,7 @@ func outer(argv []string) {
 		// Dropped as soon as the child has it. Holding a second copy would mean
 		// the read below never sees EOF, so a bwrap that did not pass the
 		// descriptor through would hang the run instead of degrading it.
-		jailSock.Close()
+		jailSock.Close() //nolint:errcheck // closing on the way out; a failed close has nothing left to report
 		// Blocks until the inner stage has installed its filter. If the listener
 		// never arrives the run continues WITHOUT elevation rather than dying
 		// mid-session: the jail is already up and Landlock is already on, so the
@@ -1338,13 +1380,18 @@ func outer(argv []string) {
 	// data. Snapshotting only on success would miss every case that matters.
 	finishRollback(rbSession)
 	if runErr != nil {
-		if ee, ok := runErr.(*exec.ExitError); ok {
+		var ee *exec.ExitError
+		if errors.As(runErr, &ee) {
 			// os.Exit runs no defers, so the record has to be closed by hand
 			// here — an unclosed log is one missing its exit line, which is the
 			// line that says whether the run finished.
 			auditLog.close(ee.ExitCode())
+			if supSock != nil {
+				// Same reason as the log: the deferred close below never runs.
+				_ = supSock.Close() //nolint:errcheck // exiting; there is nothing left to tell
+			}
 			tempCleanup()
-			os.Exit(ee.ExitCode())
+			os.Exit(ee.ExitCode()) //nolint:gocritic // the defers above are run by hand for exactly this reason
 		}
 		fatal(1, runErr.Error())
 	}
@@ -1361,6 +1408,8 @@ func finishRollback(s *rollbackSession) {
 			"); the run is recorded but not reviewable")
 		return
 	}
+	//nolint:forbidigo // stamping when this happened; the record is the
+	// only consumer and a jail runs once
 	s.After, s.End = after, time.Now().UTC()
 	if err := s.save(); err != nil {
 		fmt.Fprintln(os.Stderr, "azkaban: rollback: cannot save the session ("+err.Error()+")")
@@ -1397,7 +1446,13 @@ func finishRollback(s *rollbackSession) {
 // resolves, since --unshare-uts + --hostname would otherwise leave it
 // unresolvable.
 func writeHosts() string {
-	data, _ := os.ReadFile("/etc/hosts")
+	data, err := os.ReadFile("/etc/hosts")
+	if err != nil {
+		// The jail gets a hosts file with its own name and nothing else, which
+		// is survivable -- but it is not what the caller's /etc/hosts says.
+		fmt.Fprintln(os.Stderr, "azkaban: warning: cannot read /etc/hosts ("+err.Error()+
+			"); the jail gets only its own hostname")
+	}
 	out := string(data)
 	if !strings.Contains(out, " "+jailHostname) && !strings.Contains(out, "\t"+jailHostname) {
 		out += "\n127.0.0.1 " + jailHostname
@@ -1413,7 +1468,13 @@ func writeResolv() string {
 	if err != nil {
 		real = "/etc/resolv.conf"
 	}
-	data, _ := os.ReadFile(real)
+	data, err := os.ReadFile(real)
+	if err != nil {
+		// An empty resolv.conf inside the jail reads as "the network is
+		// broken" rather than "azkaban could not copy your resolver".
+		fmt.Fprintln(os.Stderr, "azkaban: warning: cannot read "+real+" ("+err.Error()+
+			"); the jail will have no resolver")
+	}
 	return tempWith("azkaban-resolv-", string(data))
 }
 
@@ -1523,6 +1584,7 @@ func setupCgroup(memMax string, pidsMax int) *os.File {
 		return unavailable("no cgroup v2 mount for this process")
 	}
 	parent := filepath.Dir(filepath.Join("/sys/fs/cgroup", rel))
+	//nolint:errcheck // a file that cannot be read is answered as absent by the check below
 	sub, _ := os.ReadFile(filepath.Join(parent, "cgroup.subtree_control"))
 	if !strings.Contains(string(sub), "memory") {
 		return unavailable("no delegated memory controller at " + parent)
@@ -1549,7 +1611,11 @@ func setupCgroup(memMax string, pidsMax int) *os.File {
 		}
 	}
 	if pidsMax > 0 {
-		os.WriteFile(filepath.Join(dir, "pids.max"), []byte(strconv.Itoa(pidsMax)), 0o644)
+		// Same reasoning as memory.max above: reaching here means the tree is
+		// usable, so a refused write is the cap not being applied.
+		if err := os.WriteFile(filepath.Join(dir, "pids.max"), []byte(strconv.Itoa(pidsMax)), 0o644); err != nil {
+			fatal(1, "--pids-max cannot be enforced: could not set pids.max: "+err.Error())
+		}
 	}
 
 	fd, err := os.Open(dir)
@@ -1613,7 +1679,9 @@ func llJoin(what string, paths []string) string {
 // overlayfs (Linux >= 5.11); if the kernel refuses, bwrap fails with a clear
 // error and --persist is the way out.
 var bwrapHelp = sync.OnceValue(func() string {
-	out, _ := exec.Command(bwrapBin, "--help").CombinedOutput()
+	// A bubblewrap that cannot answer --help advertises nothing, which is the
+	// same conservative answer as a build without the flag.
+	out, _ := exec.CommandContext(context.Background(), bwrapBin, "--help").CombinedOutput() //nolint:errcheck // see above
 	return string(out)
 })
 
@@ -1655,7 +1723,9 @@ func tempCleanup() {
 	tempMu.Lock()
 	defer tempMu.Unlock()
 	for _, p := range tempPaths {
-		os.RemoveAll(p)
+		// Best effort by definition: this also runs from a signal handler, and
+		// a file that will not delete is a leaked temp file, not a failed run.
+		_ = os.RemoveAll(p) //nolint:errcheck // see above
 	}
 	tempPaths = nil
 }
@@ -1668,8 +1738,11 @@ func cleanupOnSignal() {
 	go func() {
 		s := <-ch
 		tempCleanup()
-		signal.Reset(s.(syscall.Signal))
-		syscall.Kill(os.Getpid(), s.(syscall.Signal))
+		// The channel only ever carries the three signals registered above, all
+		// of which are syscall.Signal.
+		sig, _ := s.(syscall.Signal) //nolint:errcheck // see above
+		signal.Reset(sig)
+		_ = syscall.Kill(os.Getpid(), sig) //nolint:errcheck // re-raising to exit with the signal's status
 	}()
 }
 
@@ -1688,8 +1761,15 @@ func tempWithMode(prefix, content string, mode os.FileMode) string {
 	if err != nil {
 		fatal(1, err.Error())
 	}
-	f.WriteString(content)
-	f.Close()
+	if _, err := f.WriteString(content); err != nil {
+		_ = f.Close() //nolint:errcheck // closing on the way out; a failed close has nothing left to report
+		fatal(1, "writing "+f.Name()+": "+err.Error())
+	}
+	if err := f.Close(); err != nil {
+		// A short write surfaces at close; binding a truncated file over a real
+		// one is exactly what this function must not do quietly.
+		fatal(1, "writing "+f.Name()+": "+err.Error())
+	}
 	if mode != 0 {
 		if err := os.Chmod(f.Name(), mode); err != nil {
 			fatal(1, err.Error())
@@ -1721,6 +1801,8 @@ func presentUnder(home string, entries []string) []string {
 // splitEnv - Reads one AZKABAN_LL_* allowlist. FieldsFunc drops empty fields,
 // so blank entries and a trailing newline need no special-casing.
 func splitEnv(k string) []string {
+	//nolint:forbidigo // the AZKABAN_LL_* allowlists, read inside the jail from
+	// the environment the outer stage set for exactly this
 	return strings.FieldsFunc(os.Getenv(k), func(r rune) bool { return r == '\n' })
 }
 

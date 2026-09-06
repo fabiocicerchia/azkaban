@@ -83,9 +83,16 @@ type change struct {
 
 // rollbackDir is where snapshots and content live.
 func rollbackDir() string {
+	//nolint:forbidigo // the caller's session is the input here: this is
+	// read where the directory is computed, and the tests set it per case.
 	base := os.Getenv("XDG_STATE_HOME")
 	if base == "" {
-		home, _ := os.UserHomeDir()
+		home, err := os.UserHomeDir()
+		if err != nil {
+			// Falling back to a relative path would put the rollback state in
+			// whatever directory the caller happened to be in.
+			return ""
+		}
 		base = filepath.Join(home, ".local", "state")
 	}
 	return filepath.Join(base, "azkaban", "rollback")
@@ -99,6 +106,8 @@ func rollbackStore() string { return filepath.Join(rollbackDir(), "objects") }
 // twenty runs costs one copy. That is what makes taking a snapshot before every
 // run affordable — and it has to be affordable, or the feature is off.
 func takeSnapshot(roots []string, store string) (*snapshot, error) {
+	//nolint:forbidigo // stamping when this happened; the record is the
+	// only consumer and a jail runs once
 	snap := &snapshot{Version: 1, Taken: time.Now().UTC(), Roots: roots}
 	if store != "" {
 		if err := os.MkdirAll(store, 0o700); err != nil {
@@ -113,7 +122,10 @@ func takeSnapshot(roots []string, store string) (*snapshot, error) {
 		count := 0
 		err = filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
 			if err != nil {
-				return nil // an unreadable subtree is not a reason to abandon the rest
+				// An unreadable subtree is not a reason to abandon the rest, but it
+				// is a hole in what a rollback can put back, so it is recorded.
+				snap.Skipped = append(snap.Skipped, fmt.Sprintf("%s (%v)", p, err))
+				return nil //nolint:nilerr // recorded in Skipped above; the walk carries on
 			}
 			if d.IsDir() {
 				if rollbackSkip[d.Name()] {
@@ -135,7 +147,10 @@ func takeSnapshot(roots []string, store string) (*snapshot, error) {
 			}
 			fi, err := d.Info()
 			if err != nil {
-				return nil
+				// Same: a file whose metadata cannot be read is one this snapshot
+				// cannot restore, and saying so is the whole point of Skipped.
+				snap.Skipped = append(snap.Skipped, fmt.Sprintf("%s (%v)", p, err))
+				return nil //nolint:nilerr // recorded in Skipped above
 			}
 			e := snapEntry{Path: p, Size: fi.Size(), Mode: fi.Mode(), Mod: fi.ModTime().UTC()}
 			if fi.Size() <= rollbackMaxFileSize {
@@ -160,7 +175,7 @@ func storeFile(path, store string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck // closing on the way out; a failed close has nothing left to report
 
 	h := sha256.New()
 	if _, err := io.Copy(h, f); err != nil {
@@ -190,11 +205,16 @@ func storeFile(path, store string) (string, error) {
 		return sum, err
 	}
 	if _, err := io.Copy(out, f); err != nil {
-		out.Close()
-		os.Remove(tmp)
+		_ = out.Close()    //nolint:errcheck // the copy already failed; this file is being removed
+		_ = os.Remove(tmp) //nolint:errcheck // as above
 		return sum, err
 	}
-	out.Close()
+	if err := out.Close(); err != nil {
+		// A short write surfaces here, and an object that is short is one that
+		// no longer matches the hash it is filed under.
+		_ = os.Remove(tmp) //nolint:errcheck // already failing; the temp file is cleaned up by the run's exit
+		return sum, err
+	}
 	// Rename last: a partially written object under its final name would be
 	// restored as truncated content, which is worse than not having it.
 	return sum, os.Rename(tmp, dst)
@@ -444,7 +464,7 @@ func rollbackCleanup(argv []string) {
 		if i < keep {
 			continue
 		}
-		os.Remove(s.path())
+		os.Remove(s.path()) //nolint:errcheck // best effort: a file that will not delete is not a failed run
 	}
 
 	live := map[string]bool{}
@@ -457,11 +477,12 @@ func rollbackCleanup(argv []string) {
 	}
 	store := rollbackStore()
 	removed, freed := 0, int64(0)
-	dirs, _ := os.ReadDir(store)
+	dirs, _ := os.ReadDir(store) //nolint:errcheck // a store directory that cannot be listed is an empty one for this pass
 	for _, d := range dirs {
 		if !d.IsDir() {
 			continue
 		}
+		//nolint:errcheck // a store directory that cannot be listed is an empty one for this pass
 		objs, _ := os.ReadDir(filepath.Join(store, d.Name()))
 		for _, o := range objs {
 			if live[d.Name()+o.Name()] {

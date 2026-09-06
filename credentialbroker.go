@@ -25,6 +25,7 @@
 package main
 
 import (
+	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -148,6 +149,8 @@ func startCredentialBroker(name string, allowWrites bool) (*credentialBroker, er
 	}
 	secret := ""
 	for _, env := range p.EnvNames {
+		//nolint:forbidigo // the credential is read from the host session at the
+		// moment the broker is built, and never stored anywhere else
 		if v := os.Getenv(env); v != "" {
 			secret = v
 			break
@@ -161,13 +164,21 @@ func startCredentialBroker(name string, allowWrites bool) (*credentialBroker, er
 	if err != nil {
 		return nil, err
 	}
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	var lc net.ListenConfig
+	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, err
 	}
+	// A TCP listener whose address is not a *net.TCPAddr is not something
+	// this process can go on to advertise to the jail.
+	addr, ok := ln.Addr().(*net.TCPAddr)
+	if !ok {
+		_ = ln.Close() //nolint:errcheck // closing on the way out; a failed close has nothing left to report
+		return nil, fmt.Errorf("listener is not TCP: %T", ln.Addr())
+	}
 	b := &credentialBroker{
-		Addr: fmt.Sprintf("127.0.0.1:%d", ln.Addr().(*net.TCPAddr).Port),
-		Port: ln.Addr().(*net.TCPAddr).Port, Token: token,
+		Addr: fmt.Sprintf("127.0.0.1:%d", addr.Port),
+		Port: addr.Port, Token: token,
 		provider: p, secret: secret, allow: p.Allow,
 	}
 	if allowWrites {
@@ -178,7 +189,10 @@ func startCredentialBroker(name string, allowWrites bool) (*credentialBroker, er
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       2 * time.Minute,
 	}
-	go srv.Serve(ln)
+	// Serve returns when the listener is closed, which is how this proxy is
+	// stopped; there is no other outcome to report.
+	//nolint:errcheck // Serve ends when the listener closes, which is how this proxy is stopped
+	go func() { _ = srv.Serve(ln) }()
 	return b, nil
 }
 
@@ -266,6 +280,7 @@ func (b *credentialBroker) serve(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "azkaban credential broker: upstream: "+err.Error(), http.StatusBadGateway)
 		return
 	}
+	//nolint:errcheck // the body is read or abandoned either way; a failed close costs a pooled connection
 	defer resp.Body.Close()
 
 	auditLog.event("credential", map[string]any{
@@ -283,6 +298,7 @@ func (b *credentialBroker) serve(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(resp.StatusCode)
 	// Streamed: a clone is a long response and buffering it would hold it whole
 	// in the outer process's memory.
+	//nolint:errcheck // the status is already sent; a client that left mid-body cannot be told
 	_, _ = io.Copy(flushWriter{w}, resp.Body)
 }
 

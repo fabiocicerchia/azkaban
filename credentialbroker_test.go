@@ -9,14 +9,21 @@ import (
 	"testing"
 )
 
-// brokerAgainst points a broker at a fake upstream that records what it saw, so
-// the tests can assert on the request the *upstream* receives — which is where
-// the credential substitution either happened or did not.
-func brokerAgainst(t *testing.T, write bool) (*credentialBroker, *http.Request, func(method, path, token string) *http.Response) {
+// brokerReply is one round trip through the broker, already read: the status,
+// the headers the jail would see, and the body.
+type brokerReply struct {
+	Status int
+	Header http.Header
+	Body   string
+}
+
+// brokerAgainst points a broker at a fake upstream and returns a function that
+// makes one request through it, already read.
+func brokerAgainst(t *testing.T, write bool) (*credentialBroker, func(method, path, token string) brokerReply) {
 	t.Helper()
-	var seen *http.Request
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		seen = r.Clone(r.Context())
+	// The upstream only has to answer: the test that asserts on what it saw
+	// builds its own server, because that is the only one that needs it.
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("upstream ok"))
 	}))
@@ -33,9 +40,11 @@ func brokerAgainst(t *testing.T, write bool) (*credentialBroker, *http.Request, 
 		Allow: b.provider.Allow, WriteAllow: b.provider.WriteAllow, Env: b.provider.Env,
 	}
 
-	do := func(method, path, token string) *http.Response {
+	// The reply is read and closed here rather than handed back: six tests
+	// were each closing a body they did not open.
+	do := func(method, path, token string) brokerReply {
 		t.Helper()
-		req, err := http.NewRequest(method, "http://"+b.Addr+path, nil)
+		req, err := http.NewRequestWithContext(t.Context(), method, "http://"+b.Addr+path, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -47,25 +56,27 @@ func brokerAgainst(t *testing.T, write bool) (*credentialBroker, *http.Request, 
 		if err != nil {
 			t.Fatal(err)
 		}
-		return resp
+		defer resp.Body.Close() //nolint:errcheck // the body is read on the line below
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return brokerReply{Status: resp.StatusCode, Header: resp.Header, Body: string(body)}
 	}
-	return b, seen, do
+	return b, do
 }
 
 func TestBrokerAttachesTheCredentialUpstreamAndNeverDownstream(t *testing.T) {
-	b, _, do := brokerAgainst(t, false)
+	b, do := brokerAgainst(t, false)
 
 	resp := do(http.MethodGet, "/o/r.git/info/refs?service=git-upload-pack", b.Token)
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("status = %d: %s", resp.StatusCode, body)
+	if resp.Status != http.StatusOK {
+		t.Fatalf("status = %d: %s", resp.Status, resp.Body)
 	}
-	body, _ := io.ReadAll(resp.Body)
 
 	// The whole point: the secret is on the wire to GitHub and nowhere the jail
 	// can see it.
-	if strings.Contains(string(body), "ghp_the_real_secret") {
+	if strings.Contains(resp.Body, "ghp_the_real_secret") {
 		t.Fatal("the credential came back to the client")
 	}
 	for k, vs := range resp.Header {
@@ -96,7 +107,7 @@ func TestBrokerSendsTheSecretToTheUpstream(t *testing.T) {
 	b.provider.Upstream = upstream.URL
 	defer func() { b.provider.Upstream = "https://github.com" }()
 
-	req, _ := http.NewRequest(http.MethodGet, "http://"+b.Addr+"/o/r.git/info/refs", nil)
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+b.Addr+"/o/r.git/info/refs", nil)
 	req.Header.Set("Authorization", "Basic "+
 		base64.StdEncoding.EncodeToString([]byte("azkaban:"+b.Token)))
 	resp, err := http.DefaultClient.Do(req)
@@ -115,7 +126,7 @@ func TestBrokerSendsTheSecretToTheUpstream(t *testing.T) {
 }
 
 func TestBrokerRefusesPushUnlessAskedFor(t *testing.T) {
-	b, _, do := brokerAgainst(t, false)
+	b, do := brokerAgainst(t, false)
 
 	// Clone and fetch are the default policy; push is the thing that changes
 	// someone else's repository, and a token in the jail could do it freely.
@@ -126,58 +137,52 @@ func TestBrokerRefusesPushUnlessAskedFor(t *testing.T) {
 		{http.MethodPost, "/o/r.git/git-upload-pack"},
 	} {
 		resp := do(ok.method, ok.path, b.Token)
-		resp.Body.Close()
-		if resp.StatusCode == http.StatusForbidden {
+		if resp.Status == http.StatusForbidden {
 			t.Errorf("%s %s was refused; it is on the read policy", ok.method, ok.path)
 		}
 	}
 
 	resp := do(http.MethodPost, "/o/r.git/git-receive-pack", b.Token)
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("push = %d, want 403", resp.StatusCode)
+	if resp.Status != http.StatusForbidden {
+		t.Fatalf("push = %d, want 403", resp.Status)
 	}
 	// The refusal has to name the fix, or someone will conclude the broker is
 	// broken rather than that it is doing its job.
-	if !strings.Contains(string(body), "credential github write") {
-		t.Errorf("refusal = %q, want it to name the opt-in", body)
+	if !strings.Contains(resp.Body, "credential github write") {
+		t.Errorf("refusal = %q, want it to name the opt-in", resp.Body)
 	}
 }
 
 func TestBrokerAllowsPushWhenAskedFor(t *testing.T) {
-	b, _, do := brokerAgainst(t, true)
+	b, do := brokerAgainst(t, true)
 	resp := do(http.MethodPost, "/o/r.git/git-receive-pack", b.Token)
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusForbidden {
-		t.Error("push refused despite `write`")
+	if resp.Status == http.StatusForbidden {
+		t.Errorf("push refused despite `write`: %s", resp.Body)
 	}
 }
 
 func TestBrokerRefusesAnythingOffTheRoutePolicy(t *testing.T) {
-	b, _, do := brokerAgainst(t, true)
+	b, do := brokerAgainst(t, true)
 	// Scoping per route is the entire reason for brokering rather than setting
 	// GH_TOKEN: a token in the jail can do everything the token can do.
 	for _, path := range []string{
 		"/api/v3/user", "/settings/tokens", "/o/r.git/git-upload-pack/../../etc",
 	} {
 		resp := do(http.MethodGet, path, b.Token)
-		resp.Body.Close()
-		if resp.StatusCode != http.StatusForbidden {
-			t.Errorf("GET %s = %d, want 403", path, resp.StatusCode)
+		if resp.Status != http.StatusForbidden {
+			t.Errorf("GET %s = %d, want 403", path, resp.Status)
 		}
 	}
 }
 
 func TestBrokerRequiresTheSessionToken(t *testing.T) {
-	b, _, do := brokerAgainst(t, false)
+	b, do := brokerAgainst(t, false)
 	// Loopback is shared with every process on the host; without this any of
 	// them could spend this run's credential.
 	for _, tok := range []string{"", "wrong", b.Token + "x"} {
 		resp := do(http.MethodGet, "/o/r.git/info/refs", tok)
-		resp.Body.Close()
-		if resp.StatusCode != http.StatusUnauthorized {
-			t.Errorf("token %q = %d, want 401", tok, resp.StatusCode)
+		if resp.Status != http.StatusUnauthorized {
+			t.Errorf("token %q = %d, want 401", tok, resp.Status)
 		}
 	}
 }

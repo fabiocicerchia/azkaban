@@ -32,6 +32,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
@@ -79,11 +80,19 @@ func startEgressProxy(hosts []string) (*egressProxy, error) {
 	if err != nil {
 		return nil, err
 	}
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	var lc net.ListenConfig
+	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, err
 	}
-	port := ln.Addr().(*net.TCPAddr).Port
+	// A TCP listener whose address is not a *net.TCPAddr is not something
+	// this process can go on to advertise to the jail.
+	addr, ok := ln.Addr().(*net.TCPAddr)
+	if !ok {
+		_ = ln.Close() //nolint:errcheck // closing on the way out; a failed close has nothing left to report
+		return nil, fmt.Errorf("listener is not TCP: %T", ln.Addr())
+	}
+	port := addr.Port
 	p := &egressProxy{
 		Addr:  fmt.Sprintf("127.0.0.1:%d", port),
 		Port:  port,
@@ -98,7 +107,10 @@ func startEgressProxy(hosts []string) (*egressProxy, error) {
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       2 * time.Minute,
 	}
-	go srv.Serve(ln)
+	// Serve returns when the listener is closed, which is how this proxy is
+	// stopped; there is no other outcome to report.
+	//nolint:errcheck // Serve ends when the listener closes, which is how this proxy is stopped
+	go func() { _ = srv.Serve(ln) }()
 	return p, nil
 }
 
@@ -166,7 +178,7 @@ func (p *egressProxy) tunnel(w http.ResponseWriter, r *http.Request) {
 		p.deny(w, r.Host, "upstream unreachable: "+err.Error())
 		return
 	}
-	defer upstream.Close()
+	defer upstream.Close() //nolint:errcheck // closing on the way out; a failed close has nothing left to report
 
 	hj, ok := w.(http.Hijacker)
 	if !ok {
@@ -177,7 +189,7 @@ func (p *egressProxy) tunnel(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	defer client.Close()
+	defer client.Close() //nolint:errcheck // closing on the way out; a failed close has nothing left to report
 
 	if _, err := client.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n")); err != nil {
 		return
@@ -189,8 +201,10 @@ func (p *egressProxy) tunnel(w http.ResponseWriter, r *http.Request) {
 	// Raw bytes both ways, and nothing looks at them. This is the whole of the
 	// "no TLS interception" promise.
 	done := make(chan struct{}, 2)
+	//nolint:errcheck // either side closing ends the tunnel, which is the
+	// normal end of a proxied connection and not something to report
 	go func() { _, _ = io.Copy(upstream, client); done <- struct{}{} }()
-	go func() { _, _ = io.Copy(client, upstream); done <- struct{}{} }()
+	go func() { _, _ = io.Copy(client, upstream); done <- struct{}{} }() //nolint:errcheck // as above
 	<-done
 }
 

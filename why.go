@@ -96,8 +96,18 @@ func whyCommand(argv []string) {
 			out = append(out, decideNet(*fHost, *fPort, jp.NetIsolate, jp.NetPorts, jp.Landlock))
 		}
 	} else {
-		home, _ := os.UserHomeDir()
-		cwd, _ := os.Getwd()
+		home, err := os.UserHomeDir()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "azkaban why: cannot determine $HOME ("+err.Error()+
+				"); every verdict is decided from it")
+			os.Exit(2)
+		}
+		cwd, err := os.Getwd()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "azkaban why: cannot determine the working directory ("+err.Error()+
+				"); it is the one path that is always writable")
+			os.Exit(2)
+		}
 		uc := loadUserBinds(home)
 		uc.ro = append(uc.ro, fRO...)
 		uc.rw = append(uc.rw, fRW...)
@@ -114,7 +124,7 @@ func whyCommand(argv []string) {
 	if *fJSON {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
-		_ = enc.Encode(out)
+		_ = enc.Encode(out) //nolint:errcheck // writing the answer to stdout; a failed write has nowhere to go
 		return
 	}
 	for _, v := range out {
@@ -147,7 +157,7 @@ func decide(path, op, home, cwd string, uc userConf, overlay bool) verdict {
 		return systemVerdict(p, op)
 	}
 
-	rel, _ := filepath.Rel(home, p)
+	rel, _ := filepath.Rel(home, p) //nolint:errcheck // p is under home, checked immediately above
 	top := topLayer(rel, home, uc)
 
 	if top == nil {
@@ -434,22 +444,25 @@ func whyUsage() {
 
 // loadSelfPolicy reads the jail's own description.
 func loadSelfPolicy() (jailPolicy, error) {
+	//nolint:forbidigo // --self answers from inside a jail, and these two are
+	// the markers that jail was started with
 	path := os.Getenv("AZKABAN_POLICY")
 	if path == "" {
 		path = guidancePolicyPath
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
+		//nolint:forbidigo // see above
 		if os.Getenv("AZKABAN_JAIL") == "" {
 			return jailPolicy{}, fmt.Errorf(
 				"--self answers from inside a jail, and this is not one. Drop --self to ask about the policy a jail would have")
 		}
 		return jailPolicy{}, fmt.Errorf(
-			"cannot read %s: %v. The jail was started with --no-guidance, so it carries no self-description", path, err)
+			"cannot read %s: %w. The jail was started with --no-guidance, so it carries no self-description", path, err)
 	}
 	var jp jailPolicy
 	if err := json.Unmarshal(data, &jp); err != nil {
-		return jailPolicy{}, fmt.Errorf("%s is not readable as a policy: %v", path, err)
+		return jailPolicy{}, fmt.Errorf("%s is not readable as a policy: %w", path, err)
 	}
 	return jp, nil
 }

@@ -32,6 +32,7 @@
 package main
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -92,13 +93,16 @@ func newSSHAgentProxy(upstream, dir string, confirm bool) (*sshAgentProxy, error
 		path:     filepath.Join(dir, "agent.sock"),
 		confirm:  confirm,
 	}
-	_ = os.Remove(p.path)
-	ln, err := net.Listen("unix", p.path)
+	// A socket left behind by a killed run; net.Listen would refuse to bind
+	// over it, and there is nothing to report about one that was not there.
+	_ = os.Remove(p.path) //nolint:errcheck // see above
+	var lc net.ListenConfig
+	ln, err := lc.Listen(context.Background(), "unix", p.path)
 	if err != nil {
 		return nil, err
 	}
 	if err := os.Chmod(p.path, 0o600); err != nil {
-		ln.Close()
+		ln.Close() //nolint:errcheck // closing on the way out; a failed close has nothing left to report
 		return nil, err
 	}
 	p.listener = ln
@@ -108,7 +112,7 @@ func newSSHAgentProxy(upstream, dir string, confirm bool) (*sshAgentProxy, error
 		if tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0); err == nil {
 			p.tty = tty
 		} else {
-			ln.Close()
+			ln.Close() //nolint:errcheck // closing on the way out; a failed close has nothing left to report
 			return nil, errors.New("--ssh-agent-confirm needs a terminal to ask on")
 		}
 	}
@@ -145,9 +149,9 @@ func (p *sshAgentProxy) close() {
 	p.listener = nil
 	p.mu.Unlock()
 	if ln != nil {
-		ln.Close()
+		_ = ln.Close() //nolint:errcheck // shutting down; there is nothing left to tell
 	}
-	_ = os.Remove(p.path)
+	_ = os.Remove(p.path) //nolint:errcheck // as above
 }
 
 func (p *sshAgentProxy) stats() map[string]any {
@@ -161,16 +165,21 @@ func (p *sshAgentProxy) stats() map[string]any {
 // handle - One connection from the jail. Each message is read whole, classified
 // and either relayed to the real agent or answered with SSH_AGENT_FAILURE.
 func (p *sshAgentProxy) handle(jail net.Conn) {
-	defer jail.Close()
+	defer jail.Close() //nolint:errcheck // closing on the way out; a failed close has nothing left to report
 	// A tool that opens the socket and says nothing must not hold a goroutine
 	// and an upstream connection for the life of the run.
+	//nolint:errcheck,forbidigo // a deadline is an absolute time; a connection
+	// that cannot take one is one the reads below will fail on anyway
 	_ = jail.SetDeadline(time.Now().Add(2 * time.Minute))
 
-	up, err := net.DialTimeout("unix", p.upstream, 5*time.Second)
+	// The 5s bound is the dialer's; the context is Background because a
+	// forwarded agent connection outlives no request of ours.
+	d := net.Dialer{Timeout: 5 * time.Second}
+	up, err := d.DialContext(context.Background(), "unix", p.upstream)
 	if err != nil {
 		return
 	}
-	defer up.Close()
+	defer up.Close() //nolint:errcheck // closing on the way out; a failed close has nothing left to report
 
 	for {
 		msg, err := readAgentMessage(jail)
@@ -194,7 +203,7 @@ func (p *sshAgentProxy) handle(jail net.Conn) {
 		case agentRequestIdentities:
 			p.Lists.Add(1)
 		}
-		_ = up.SetDeadline(time.Now().Add(2 * time.Minute))
+		_ = up.SetDeadline(time.Now().Add(2 * time.Minute)) //nolint:errcheck,forbidigo // as above
 		if err := writeAgentMessage(up, msg); err != nil {
 			return
 		}
@@ -232,12 +241,14 @@ func (p *sshAgentProxy) classify(msg []byte) (bool, byte) {
 // is an opaque session identifier that means nothing to a human, and printing
 // it would train people to skip the prompt.
 func (p *sshAgentProxy) ask(msg []byte) bool {
-	blob, _ := agentString(msg[1:])
+	blob := agentString(msg[1:])
+	//nolint:errcheck // prompting on the operator's terminal; a tty that will not take it is answered as a denial below
 	fmt.Fprintf(p.tty, "\nazkaban: the jail asked to SIGN with your ssh key (%s)\n"+
 		"  allow this one signature? [y/N] ", fingerprintish(blob))
 	answer := make([]byte, 8)
 	n, err := p.tty.Read(answer)
 	if err != nil || n == 0 {
+		//nolint:errcheck // prompting on the operator's terminal; a tty that will not take it is answered as a denial below
 		fmt.Fprintln(p.tty, "no answer, denied")
 		return false
 	}
@@ -252,7 +263,7 @@ func fingerprintish(blob []byte) string {
 	if len(blob) == 0 {
 		return "unknown key"
 	}
-	kind, _ := agentString(blob) // the blob opens with its own key type string
+	kind := agentString(blob) // the blob opens with its own key type string
 	tail := blob
 	if len(tail) > 8 {
 		tail = tail[len(tail)-8:]
@@ -294,16 +305,16 @@ func writeAgentMessage(w io.Writer, msg []byte) error {
 }
 
 // agentString - The protocol's string type: a 32-bit length then that many
-// bytes. Returns the contents and whatever follows, and an empty pair rather
-// than an error on a short buffer — every caller here is producing a display
-// string, and a malformed message is refused on its type byte anyway.
-func agentString(b []byte) ([]byte, []byte) {
+// bytes. Returns the contents, and nil rather than an error on a short
+// buffer — every caller here is producing a display string, and a malformed
+// message is refused on its type byte anyway.
+func agentString(b []byte) []byte {
 	if len(b) < 4 {
-		return nil, nil
+		return nil
 	}
 	n := binary.BigEndian.Uint32(b[:4])
 	if uint64(n) > uint64(len(b)-4) {
-		return nil, nil
+		return nil
 	}
-	return b[4 : 4+n], b[4+n:]
+	return b[4 : 4+n]
 }

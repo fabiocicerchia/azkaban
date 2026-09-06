@@ -148,7 +148,7 @@ func TestEgressProxyEndToEnd(t *testing.T) {
 	auth := "Basic " + base64.StdEncoding.EncodeToString([]byte("azkaban:"+p.Token))
 
 	do := func(target, authHeader string) (int, string) {
-		req, _ := http.NewRequest(http.MethodConnect, "http://"+p.Addr, nil)
+		req, _ := http.NewRequestWithContext(t.Context(), http.MethodConnect, "http://"+p.Addr, nil)
 		req.Host = target
 		req.URL.Host = p.Addr
 		if authHeader != "" {

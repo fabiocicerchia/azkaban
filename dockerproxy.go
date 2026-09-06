@@ -51,12 +51,13 @@ func startDockerFilterProxy(realSock, cwd string) (string, error) {
 	}
 	tempTrack(dir)
 	sock := filepath.Join(dir, "docker.sock")
-	ln, err := net.Listen("unix", sock)
+	var lc net.ListenConfig
+	ln, err := lc.Listen(context.Background(), "unix", sock)
 	if err != nil {
 		return "", err
 	}
 
-	target, _ := url.Parse("http://docker")
+	target, _ := url.Parse("http://docker") //nolint:errcheck // a constant URL, parsed at every start
 	proxy := httputil.NewSingleHostReverseProxy(target)
 	proxy.Transport = &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -74,7 +75,10 @@ func startDockerFilterProxy(realSock, cwd string) (string, error) {
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       2 * time.Minute,
 	}
-	go srv.Serve(ln)
+	// Serve returns when the listener is closed, which is how this proxy is
+	// stopped; there is no other outcome to report.
+	//nolint:errcheck // Serve ends when the listener closes, which is how this proxy is stopped
+	go func() { _ = srv.Serve(ln) }()
 	return sock, nil
 }
 
@@ -149,6 +153,7 @@ func dockerFilterHandler(proxy http.Handler, rootReal string) http.Handler {
 		}
 		if guarded(r) {
 			body, err := io.ReadAll(io.LimitReader(r.Body, maxCreateBody))
+			//nolint:errcheck // the body is read or abandoned either way; a failed close costs a pooled connection
 			r.Body.Close()
 			if err != nil {
 				denyJSON(w, "could not read request body")
@@ -206,7 +211,9 @@ func guarded(r *http.Request) bool {
 func denyJSON(w http.ResponseWriter, reason string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusForbidden)
-	json.NewEncoder(w).Encode(map[string]string{
+	//nolint:errcheck // the 403 is already on the wire; a client that left
+	// mid-body has nowhere to be told about it
+	_ = json.NewEncoder(w).Encode(map[string]string{
 		"message": "azkaban docker filter: " + reason,
 	})
 }

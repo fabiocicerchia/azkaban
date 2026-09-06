@@ -476,7 +476,8 @@ func TestSSHAgent_NotForwardedByDefault(t *testing.T) {
 func TestSSHAgent_OptInBindsSocketAndKnownHosts(t *testing.T) {
 	e := newEnv(t)
 	sock := filepath.Join(e.root, "agent.sock")
-	l, err := net.Listen("unix", sock)
+	var lc net.ListenConfig
+	l, err := lc.Listen(t.Context(), "unix", sock)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -833,7 +834,8 @@ func TestNetPorts_RestrictOutboundTCP(t *testing.T) {
 		t.Skip("no /usr/bin/python3")
 	}
 	// Something listening on the host loopback that the jail should not reach.
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	var lc net.ListenConfig
+	ln, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Skip("cannot listen on loopback")
 	}

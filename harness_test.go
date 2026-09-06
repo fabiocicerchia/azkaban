@@ -22,6 +22,8 @@ package main
 // still run against a fake home, because the next bug will not be this one.
 
 import (
+	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -55,7 +57,8 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 	azkabanBin = filepath.Join(dir, "azkaban")
-	build := exec.Command("go", "build", "-o", azkabanBin, ".")
+	// TestMain: there is no test, and so no test context, to hang this on.
+	build := exec.CommandContext(context.Background(), "go", "build", "-o", azkabanBin, ".")
 	build.Env = append(os.Environ(), "CGO_ENABLED=0")
 	if out, err := build.CombinedOutput(); err != nil {
 		os.RemoveAll(dir)
@@ -219,7 +222,7 @@ func (e *env) runIn(t *testing.T, cwd string, flags []string, script string, ext
 		args = append(args, "--", "/bin/sh", "-c", script)
 	}
 
-	cmd := exec.Command(azkabanBin, args...)
+	cmd := exec.CommandContext(t.Context(), azkabanBin, args...)
 	cmd.Dir = cwd
 	cmd.Env = append([]string{
 		"HOME=" + e.home,
@@ -231,7 +234,8 @@ func (e *env) runIn(t *testing.T, cwd string, flags []string, script string, ext
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	err := cmd.Run()
 	r := result{stdout: out.String(), stderr: errb.String()}
-	if ee, ok := err.(*exec.ExitError); ok {
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
 		r.code = ee.ExitCode()
 	} else if err != nil {
 		t.Fatalf("running azkaban: %v\nstderr: %s", err, errb.String())

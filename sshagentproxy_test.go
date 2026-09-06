@@ -22,7 +22,8 @@ func startFakeAgent(t *testing.T) *fakeAgent {
 	t.Helper()
 	dir := t.TempDir()
 	a := &fakeAgent{path: filepath.Join(dir, "upstream.sock"), seen: make(chan byte, 32)}
-	ln, err := net.Listen("unix", a.path)
+	var lc net.ListenConfig
+	ln, err := lc.Listen(t.Context(), "unix", a.path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,9 +53,11 @@ func startFakeAgent(t *testing.T) *fakeAgent {
 	return a
 }
 
-func startProxy(t *testing.T, upstream string, confirm bool) *sshAgentProxy {
+// Confirmation is off in every test here: the prompt needs a tty, and the
+// one test that exercises it builds the proxy itself.
+func startProxy(t *testing.T, upstream string) *sshAgentProxy {
 	t.Helper()
-	p, err := newSSHAgentProxy(upstream, t.TempDir(), confirm)
+	p, err := newSSHAgentProxy(upstream, t.TempDir(), false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +70,8 @@ func startProxy(t *testing.T, upstream string, confirm bool) *sshAgentProxy {
 // reply, which is the message type.
 func agentAsk(t *testing.T, p *sshAgentProxy, msg []byte) byte {
 	t.Helper()
-	c, err := net.DialTimeout("unix", p.path, 2*time.Second)
+	d := net.Dialer{Timeout: 2 * time.Second}
+	c, err := d.DialContext(t.Context(), "unix", p.path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +94,7 @@ func agentAsk(t *testing.T, p *sshAgentProxy, msg []byte) byte {
 
 func TestListingAndSigningReachTheRealAgent(t *testing.T) {
 	up := startFakeAgent(t)
-	p := startProxy(t, up.path, false)
+	p := startProxy(t, up.path)
 
 	for _, kind := range []byte{agentRequestIdentities, agentSignRequest} {
 		if got := agentAsk(t, p, []byte{kind}); got == agentFailure {
@@ -115,7 +119,7 @@ func TestListingAndSigningReachTheRealAgent(t *testing.T) {
 
 func TestTheJailCannotAddRemoveOrLockYourKeys(t *testing.T) {
 	up := startFakeAgent(t)
-	p := startProxy(t, up.path, false)
+	p := startProxy(t, up.path)
 
 	// 17 ADD_IDENTITY, 18 REMOVE_IDENTITY, 19 REMOVE_ALL_IDENTITIES,
 	// 22 LOCK, 23 UNLOCK, 27 EXTENSION. Every one of these is reachable today
@@ -137,7 +141,7 @@ func TestTheJailCannotAddRemoveOrLockYourKeys(t *testing.T) {
 
 func TestAnUnknownMessageIsRefusedRatherThanRelayed(t *testing.T) {
 	up := startFakeAgent(t)
-	p := startProxy(t, up.path, false)
+	p := startProxy(t, up.path)
 	// The list is an allowlist so that a message type added to the protocol
 	// after this was written is refused, not waved through.
 	if got := agentAsk(t, p, []byte{200, 1, 2, 3}); got != agentFailure {
@@ -148,8 +152,9 @@ func TestAnUnknownMessageIsRefusedRatherThanRelayed(t *testing.T) {
 // ---- Framing ----
 
 func TestAnOversizedMessageIsRefusedBeforeItIsAllocated(t *testing.T) {
-	p := startProxy(t, "/nonexistent", false)
-	c, err := net.DialTimeout("unix", p.path, 2*time.Second)
+	p := startProxy(t, "/nonexistent")
+	d := net.Dialer{Timeout: 2 * time.Second}
+	c, err := d.DialContext(t.Context(), "unix", p.path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +174,8 @@ func TestAnOversizedMessageIsRefusedBeforeItIsAllocated(t *testing.T) {
 
 func TestFramingRoundTrips(t *testing.T) {
 	up := startFakeAgent(t)
-	c, err := net.Dial("unix", up.path)
+	var d net.Dialer
+	c, err := d.DialContext(t.Context(), "unix", up.path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +193,7 @@ func TestFramingRoundTrips(t *testing.T) {
 
 func TestTheJailFacingSocketIsNotReadableByOtherUsers(t *testing.T) {
 	up := startFakeAgent(t)
-	p := startProxy(t, up.path, false)
+	p := startProxy(t, up.path)
 	fi, err := os.Stat(p.path)
 	if err != nil {
 		t.Fatal(err)
@@ -206,7 +212,7 @@ func TestTheJailFacingSocketIsNotReadableByOtherUsers(t *testing.T) {
 
 func TestClosingRemovesTheSocketPath(t *testing.T) {
 	up := startFakeAgent(t)
-	p := startProxy(t, up.path, false)
+	p := startProxy(t, up.path)
 	p.close()
 	if _, err := os.Stat(p.path); err == nil {
 		t.Fatal("the socket outlived the run")
@@ -234,7 +240,7 @@ func TestTheKeyLabelSurvivesAMalformedRequest(t *testing.T) {
 }
 
 func TestAgentStringRefusesALyingLengthPrefix(t *testing.T) {
-	if s, _ := agentString([]byte{0, 0, 0, 10, 'a', 'b'}); s != nil {
+	if s := agentString([]byte{0, 0, 0, 10, 'a', 'b'}); s != nil {
 		t.Fatalf("read %q past the end of the buffer", s)
 	}
 }
