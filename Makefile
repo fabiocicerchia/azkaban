@@ -20,9 +20,9 @@ export CGO_ENABLED = 0
 .PHONY: help
 help: ## Show this help
 	awk 'BEGIN {FS = ":.*## "} \
-	  /^##@/ { printf "\n\033[1m%s\033[0m\n", substr($$0, 5) } \
-	  /^[a-zA-Z_0-9-]+:.*## / { printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2 }' \
-	  $(MAKEFILE_LIST)
+		/^##@/ { printf "\n\033[1m%s\033[0m\n", substr($$0, 5) } \
+		/^[a-zA-Z_0-9-]+:.*## / { printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2 }' \
+		$(MAKEFILE_LIST)
 
 .PHONY: setup
 setup: ## Install the pre-commit hook
