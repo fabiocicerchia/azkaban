@@ -229,8 +229,10 @@ scan() { command -v "$1" >/dev/null 2>&1; }
 run_in() { ( cd "$TARGET" && "$@" ) >/dev/null 2>&1; }
 tool_flag() { printf '  \033[1;31m⚠ %-28s\033[0m findings (run the tool to see them)\n' "$1"; HIGH=$((HIGH + 1)); }
 scan gitleaks  && ! run_in gitleaks detect --no-git -r /dev/null              && tool_flag "gitleaks: secrets"
-scan cargo     && [ -f "$TARGET/Cargo.lock" ]        && ! run_in cargo audit -q             && tool_flag "cargo audit: vuln deps"
-scan npm       && [ -f "$TARGET/package-lock.json" ] && ! run_in npm audit --audit-level=high && tool_flag "npm audit: vuln deps"
+scan cargo     && [ -f "$TARGET/Cargo.lock" ]        && ! run_in cargo audit -q \
+  && tool_flag "cargo audit: vuln deps"
+scan npm       && [ -f "$TARGET/package-lock.json" ] && ! run_in npm audit --audit-level=high \
+  && tool_flag "npm audit: vuln deps"
 scan pip-audit && ! run_in pip-audit -q              && tool_flag "pip-audit: vuln deps"
 scan semgrep   && ! run_in semgrep --config=p/security --error -q            && tool_flag "semgrep: security rules"
 scan trivy     && ! run_in trivy fs --quiet --exit-code 1 --severity HIGH,CRITICAL . && tool_flag "trivy: vulns"
