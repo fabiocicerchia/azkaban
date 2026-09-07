@@ -9,6 +9,7 @@ package main
 // unrecoverable in a way `rm -rf` on a git repo is not.
 
 import (
+	"context"
 	"encoding/json"
 	"net"
 	"net/http"
@@ -28,7 +29,8 @@ func newFakeDaemon(t *testing.T, projectDir string) *fakeDaemon {
 	t.Helper()
 	d := &fakeDaemon{}
 	sock := filepath.Join(t.TempDir(), "real.sock")
-	ln, err := net.Listen("unix", sock)
+	var lc net.ListenConfig
+	ln, err := lc.Listen(t.Context(), "unix", sock)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,9 +58,12 @@ func newFakeDaemon(t *testing.T, projectDir string) *fakeDaemon {
 func (d *fakeDaemon) do(t *testing.T, method, path, body string) int {
 	t.Helper()
 	c := &http.Client{Transport: &http.Transport{
-		Dial: func(_, _ string) (net.Conn, error) { return net.Dial("unix", d.proxySock) },
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			var d2 net.Dialer
+			return d2.DialContext(ctx, "unix", d.proxySock)
+		},
 	}}
-	req, err := http.NewRequest(method, "http://docker"+path, strings.NewReader(body))
+	req, err := http.NewRequestWithContext(t.Context(), method, "http://docker"+path, strings.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,10 +193,19 @@ func TestDockerFilter_OrdinaryCleanupStillWorks(t *testing.T) {
 func TestDockerFilter_DenialIsAWellFormedDockerError(t *testing.T) {
 	d := newFakeDaemon(t, t.TempDir())
 	c := &http.Client{Transport: &http.Transport{
-		Dial: func(_, _ string) (net.Conn, error) { return net.Dial("unix", d.proxySock) },
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			var d2 net.Dialer
+			return d2.DialContext(ctx, "unix", d.proxySock)
+		},
 	}}
-	resp, err := c.Post("http://docker/v1.45/containers/create", "application/json",
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost,
+		"http://docker/v1.45/containers/create",
 		strings.NewReader(`{"HostConfig":{"Binds":["/:/host"]}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}

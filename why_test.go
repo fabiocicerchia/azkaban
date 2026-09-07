@@ -343,7 +343,7 @@ func TestDryRunShowsTheGuidanceBinds(t *testing.T) {
 	// without the file that tells the agent it is in one. Asserting against
 	// --dry-run is what catches that class, because --dry-run is the argument
 	// list.
-	cmd := exec.Command(azkabanBin, "--dry-run", "/bin/true")
+	cmd := exec.CommandContext(t.Context(), azkabanBin, "--dry-run", "/bin/true")
 	cmd.Dir = t.TempDir()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -361,7 +361,7 @@ func TestDryRunShowsTheGuidanceBinds(t *testing.T) {
 }
 
 func TestNoGuidanceLeavesThemOut(t *testing.T) {
-	cmd := exec.Command(azkabanBin, "--dry-run", "--no-guidance", "/bin/true")
+	cmd := exec.CommandContext(t.Context(), azkabanBin, "--dry-run", "--no-guidance", "/bin/true")
 	cmd.Dir = t.TempDir()
 	out, err := cmd.CombinedOutput()
 	if err != nil {

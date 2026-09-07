@@ -37,6 +37,9 @@ type auditor struct {
 	f     *os.File
 	path  string
 	start time.Time
+	// warned is set once: a state directory that has filled up would
+	// otherwise print a line per event for the rest of the run.
+	warned bool
 }
 
 // auditLog is the process-wide record. Package-level because the docker proxy
@@ -52,6 +55,11 @@ func startAudit(enabled bool, now time.Time) *auditor {
 		return nil
 	}
 	dir := auditDir()
+	if dir == "" {
+		fmt.Fprintln(os.Stderr, "azkaban: warning: no state directory "+
+			"($XDG_STATE_HOME and $HOME are both unset); this run is not being recorded")
+		return nil
+	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		fmt.Fprintln(os.Stderr, "azkaban: warning: cannot create "+dir+"; this run is not being recorded")
 		return nil
@@ -67,9 +75,16 @@ func startAudit(enabled bool, now time.Time) *auditor {
 
 // auditDir is $XDG_STATE_HOME/azkaban/audit, or the spec's default for it.
 func auditDir() string {
+	//nolint:forbidigo // the caller's session is the input here: this is
+	// read where the directory is computed, and the tests set it per case.
 	base := os.Getenv("XDG_STATE_HOME")
 	if base == "" {
-		home, _ := os.UserHomeDir()
+		home, err := os.UserHomeDir()
+		if err != nil {
+			// Falling back to a relative path would put the run record in
+			// whatever directory the caller happened to be in.
+			return ""
+		}
 		base = filepath.Join(home, ".local", "state")
 	}
 	return filepath.Join(base, "azkaban", "audit")
@@ -82,6 +97,8 @@ func (a *auditor) event(kind string, fields map[string]any) {
 		return
 	}
 	rec := map[string]any{
+		//nolint:forbidigo // stamping when this happened; the record is the
+		// only consumer and a jail runs once
 		"t":     time.Now().UTC().Format(time.RFC3339Nano),
 		"event": kind,
 	}
@@ -94,7 +111,11 @@ func (a *auditor) event(kind string, fields map[string]any) {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	fmt.Fprintln(a.f, string(line))
+	if _, err := fmt.Fprintln(a.f, string(line)); err != nil && !a.warned {
+		a.warned = true
+		fmt.Fprintln(os.Stderr, "azkaban: warning: the run record is no longer being written ("+
+			err.Error()+"); what is in it already is still valid")
+	}
 }
 
 // close records the exit and shuts the file. Separate from event() so the
@@ -109,7 +130,11 @@ func (a *auditor) close(code int) {
 	})
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.f.Close()
+	if err := a.f.Close(); err != nil {
+		// The exit line is the last thing written, so a close that fails is a
+		// record missing exactly the line that says how the run ended.
+		fmt.Fprintln(os.Stderr, "azkaban: warning: the run record may be incomplete ("+err.Error()+")")
+	}
 }
 
 // degraded records something that silently made the jail weaker than asked for.

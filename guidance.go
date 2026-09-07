@@ -123,16 +123,17 @@ is not reachable, **say so to the user** rather than trying another route to it.
 		b.WriteString("Everything writable under `" + p.Home + "` except the persisted list is on a\n" +
 			"throwaway overlay: writes and deletes both evaporate on exit.\n\n")
 	}
-	if p.NetIsolate {
+	switch {
+	case p.NetIsolate:
 		b.WriteString("**There is no network.** Nothing outbound will work.\n\n")
-	} else if len(p.NetHosts) > 0 {
+	case len(p.NetHosts) > 0:
 		b.WriteString("Outbound traffic goes through a filtering proxy (already in `HTTPS_PROXY`)\n" +
 			"and only these hosts are reachable:\n\n")
 		for _, h := range p.NetHosts {
 			b.WriteString("- `" + h + "`\n")
 		}
 		b.WriteString("\nAnything else fails. That is the allowlist, not the network being down.\n\n")
-	} else if p.NetPorts != "" {
+	case p.NetPorts != "":
 		b.WriteString("Outbound TCP is restricted to ports: `" + p.NetPorts + "`. Other ports are\n" +
 			"refused by the kernel, which looks like a connection failure.\n\n")
 	}

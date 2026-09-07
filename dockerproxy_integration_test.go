@@ -26,7 +26,7 @@ func TestDockerProxyIntegration(t *testing.T) {
 	host := "unix://" + proxySock
 
 	run := func(args ...string) (string, error) {
-		c := exec.Command("docker", append([]string{"-H", host}, args...)...)
+		c := exec.CommandContext(t.Context(), "docker", append([]string{"-H", host}, args...)...)
 		out, err := c.CombinedOutput()
 		return string(out), err
 	}

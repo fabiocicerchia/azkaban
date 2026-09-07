@@ -60,7 +60,7 @@ func TestFilterTrapsOnlyTheTwoOpenSyscalls(t *testing.T) {
 	if !ok {
 		t.Skip("no filter for this GOARCH")
 	}
-	openat, openat2 := openSyscalls()
+	openat, openat2 := openSyscall(), uint32(openat2Syscall)
 
 	for _, nr := range []uint32{openat, openat2} {
 		if got := runFilter(prog, arch, nr); got != seccompRetUserNotif {
@@ -81,7 +81,7 @@ func TestFilterTrapsOnlyTheTwoOpenSyscalls(t *testing.T) {
 
 func TestFilterIgnoresAForeignArchitecture(t *testing.T) {
 	prog := elevationFilter()
-	openat, _ := openSyscalls()
+	openat := openSyscall()
 	// A 32-bit caller's openat is a different number in the same slot. Trapping
 	// it would supervise the wrong syscall entirely; Landlock still covers it.
 	if got := runFilter(prog, 0x40000003 /* AUDIT_ARCH_I386 */, openat); got != seccompRetAllow {
@@ -94,7 +94,7 @@ func TestFilterIgnoresTheX32ABI(t *testing.T) {
 	if arch != 0xc000003e {
 		t.Skip("x32 is an x86_64 concern")
 	}
-	openat, _ := openSyscalls()
+	openat := openSyscall()
 	if got := runFilter(elevationFilter(), arch, openat|0x40000000); got != seccompRetAllow {
 		t.Errorf("x32 openat: got %#x, want ALLOW", got)
 	}
@@ -345,7 +345,7 @@ func runTrappedChild(t *testing.T, path string, ap approver, allow ...string) (s
 	child := os.NewFile(uintptr(fds[1]), "jail")
 	defer parent.Close()
 
-	c := exec.Command(os.Args[0], "-test.run=TestHelperTrappedChild", "-test.v=false")
+	c := exec.CommandContext(t.Context(), os.Args[0], "-test.run=TestHelperTrappedChild", "-test.v=false")
 	c.Env = append(os.Environ(), "AZKABAN_TEST_TRAPPED="+path, elevateFDEnv+"=3")
 	c.ExtraFiles = []*os.File{child}
 	out, errPipe := c.StdoutPipe()
@@ -412,7 +412,7 @@ func requireUserNotif(t *testing.T) {
 	// Cheapest possible probe: try to install the filter in a throwaway child.
 	// Containers, WSL2 and old kernels all fail here, and none of them is a
 	// reason to fail the suite.
-	c := exec.Command(os.Args[0], "-test.run=TestHelperProbe")
+	c := exec.CommandContext(t.Context(), os.Args[0], "-test.run=TestHelperProbe")
 	c.Env = append(os.Environ(), "AZKABAN_TEST_PROBE=1")
 	if err := c.Run(); err != nil {
 		var ee *exec.ExitError

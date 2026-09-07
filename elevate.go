@@ -113,13 +113,16 @@ func auditArch() (uint32, bool) {
 	return 0, false
 }
 
-// openSyscalls - The two numbers this traps, per architecture. openat2 is 437
-// everywhere; openat is not.
-func openSyscalls() (uint32, uint32) {
+// openat2Syscall is 437 on every architecture, which is why it is a
+// constant and openSyscall only answers for openat.
+const openat2Syscall = 437
+
+// openSyscall - The openat number for this architecture.
+func openSyscall() uint32 {
 	if runtime.GOARCH == "arm64" {
-		return 56, 437
+		return 56
 	}
-	return 257, 437
+	return 257
 }
 
 // elevationFilter - The BPF program. Ten instructions, and the shape matters:
@@ -128,7 +131,7 @@ func openSyscalls() (uint32, uint32) {
 // looking at gets out of the way and leaves the decision to Landlock.
 func elevationFilter() []sockFilter {
 	arch, _ := auditArch()
-	openat, openat2 := openSyscalls()
+	openat, openat2 := openSyscall(), uint32(openat2Syscall)
 	const (
 		ld  = 0x20 // BPF_LD|BPF_W|BPF_ABS
 		jeq = 0x15 // BPF_JMP|BPF_JEQ|BPF_K
@@ -195,12 +198,18 @@ func recvListener(sockFD int) (int, error) {
 		return -1, err
 	}
 	msgs, err := unix.ParseSocketControlMessage(oob[:oobn])
-	if err != nil || len(msgs) == 0 {
-		return -1, fmt.Errorf("no listener in message: %v", err)
+	if err != nil {
+		return -1, fmt.Errorf("no listener in message: %w", err)
+	}
+	if len(msgs) == 0 {
+		return -1, errors.New("no listener in message: no control message")
 	}
 	fds, err := unix.ParseUnixRights(&msgs[0])
-	if err != nil || len(fds) == 0 {
-		return -1, fmt.Errorf("no listener in message: %v", err)
+	if err != nil {
+		return -1, fmt.Errorf("no listener in message: %w", err)
+	}
+	if len(fds) == 0 {
+		return -1, errors.New("no listener in message: no descriptors")
 	}
 	return fds[0], nil
 }
@@ -303,7 +312,7 @@ func readPath(pid uint32, addr uint64) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck // closing on the way out; a failed close has nothing left to report
 	buf := make([]byte, maxPathLen)
 	n, err := f.ReadAt(buf, int64(addr))
 	if n == 0 && err != nil {
@@ -333,7 +342,7 @@ func readOpenHow(pid uint32, addr uint64, size uint64) (openHow, error) {
 	if err != nil {
 		return how, err
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck // closing on the way out; a failed close has nothing left to report
 	buf := make([]byte, 24)
 	if size < 24 {
 		buf = buf[:size]
@@ -419,6 +428,8 @@ const (
 func newTerminalApprover() *terminalApprover {
 	a := &terminalApprover{
 		tokens: approvalBurst, rate: approvalRate, burst: approvalBurst,
+		//nolint:forbidigo // the default for nowFn, which is the injectable clock
+		// the rate limiter reads and the tests replace
 		nowFn: time.Now,
 	}
 	a.filled = a.nowFn()
@@ -463,18 +474,23 @@ func (a *terminalApprover) approve(r request) bool {
 		return false
 	}
 	if !a.take() {
+		//nolint:errcheck // prompting on the operator's terminal; a tty that will not take it is answered as a denial below
 		fmt.Fprintf(a.tty, "azkaban: too many requests, denying %s\n", r.Path)
 		return false
 	}
+	//nolint:errcheck // prompting on the operator's terminal; a tty that will not take it is answered as a denial below
 	fmt.Fprintf(a.tty, "\nazkaban: the jail (pid %d) asked to READ a path outside the allowlist:\n"+
 		"    %s\n", r.Pid, r.Path)
 	if r.Raw != r.Path {
+		//nolint:errcheck // prompting on the operator's terminal; a tty that will not take it is answered as a denial below
 		fmt.Fprintf(a.tty, "  asked for: %s\n", r.Raw)
 	}
+	//nolint:errcheck // prompting on the operator's terminal; a tty that will not take it is answered as a denial below
 	fmt.Fprint(a.tty, "  allow reads of this path? [y/N] ")
 	answer := make([]byte, 8)
 	n, err := a.tty.Read(answer)
 	if err != nil || n == 0 {
+		//nolint:errcheck // prompting on the operator's terminal; a tty that will not take it is answered as a denial below
 		fmt.Fprintln(a.tty, "no answer, denied")
 		return false
 	}
@@ -552,7 +568,7 @@ func (e *elevator) serve() {
 // CONTINUE, so the failure mode of this function is "azkaban behaves as if
 // --elevate had not been passed".
 func (e *elevator) handle(n *seccompNotif) {
-	openat, _ := openSyscalls()
+	openat := openSyscall()
 	dirfd := int32(n.Data.Args[0])
 
 	raw, err := readPath(n.Pid, n.Data.Args[1])
@@ -597,6 +613,7 @@ func (e *elevator) handle(n *seccompNotif) {
 		}
 	}
 	if !granted {
+		//nolint:errcheck // already on the failure path; the jail sees ENOSYS if this does not land
 		_ = respondError(e.listener, n.ID, unix.EPERM)
 		e.count(&e.denials)
 		return
@@ -607,12 +624,14 @@ func (e *elevator) handle(n *seccompNotif) {
 		// Approved, but the supervisor cannot open it either. EACCES rather
 		// than EPERM so the difference between "refused" and "not yours to
 		// give" survives into the jail's error message.
+		//nolint:errcheck // already on the failure path; the jail sees ENOSYS if this does not land
 		_ = respondError(e.listener, n.ID, unix.EACCES)
 		e.count(&e.denials)
 		return
 	}
-	defer unix.Close(fd)
+	defer unix.Close(fd) //nolint:errcheck // closing a descriptor this process is finished with
 	if err := injectFD(e.listener, n.ID, fd); err != nil {
+		//nolint:errcheck // already on the failure path; the jail sees ENOSYS if this does not land
 		_ = respondError(e.listener, n.ID, unix.EPERM)
 		e.count(&e.denials)
 		return
@@ -621,6 +640,7 @@ func (e *elevator) handle(n *seccompNotif) {
 }
 
 func (e *elevator) pass(id uint64) {
+	//nolint:errcheck // already on the failure path; the jail sees ENOSYS if this does not land
 	_ = respondContinue(e.listener, id)
 	e.count(&e.passthru)
 }
@@ -708,5 +728,5 @@ func (e *elevator) close() {
 		return
 	}
 	e.stopped = true
-	unix.Close(e.listener)
+	unix.Close(e.listener) //nolint:errcheck // closing a descriptor this process is finished with
 }

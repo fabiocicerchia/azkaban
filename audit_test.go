@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -141,7 +142,9 @@ func TestAuditWritesOneJSONLineAnEventAndClosesWithAnExit(t *testing.T) {
 	}
 }
 
-func TestANilAuditorIsAWorkingNoOp(t *testing.T) {
+// No assertions: the test is that none of these calls panic on a nil
+// auditor, so it has nothing to say to t.
+func TestANilAuditorIsAWorkingNoOp(*testing.T) {
 	// Every call site is unconditional, so --no-audit has to cost exactly one
 	// nil check rather than an `if` around each of a dozen calls.
 	var a *auditor
@@ -181,10 +184,11 @@ func TestConfigCanTurnTheRecordOffAndATypoCannot(t *testing.T) {
 // verdict the same way the filter does: an exit code a human acts on.
 func runAudit(t *testing.T, target string) (string, int) {
 	t.Helper()
-	cmd := exec.Command("./audit.sh", target)
+	cmd := exec.CommandContext(t.Context(), "./audit.sh", target)
 	out, err := cmd.CombinedOutput()
 	code := 0
-	if ee, ok := err.(*exec.ExitError); ok {
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
 		code = ee.ExitCode()
 	} else if err != nil {
 		t.Fatalf("running audit.sh %s: %v", target, err)
