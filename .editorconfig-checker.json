@@ -6,6 +6,7 @@
     "^main_test\\.go$",
     "^rollback\\.go$",
     "^sandbox_test\\.go$",
+    "^usage\\.go$",
     "^why\\.go$"
   ],
   "Disable": {
