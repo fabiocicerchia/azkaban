@@ -5,8 +5,8 @@ Thanks for taking the time to contribute!
 ## Getting started
 
 1. Fork and clone the repo.
-2. Install git hooks and dev tooling: `make setup`.
-3. Create a branch: `git checkout -b feat/short-description`.
+1. Install git hooks and dev tooling: `make setup`.
+1. Create a branch: `git checkout -b feat/short-description`.
 
 ## Making changes
 
@@ -53,9 +53,9 @@ Releases are automated by [release-please](.github/workflows/release.yml);
 you don't tag or edit the changelog manually.
 
 1. Merge `feat:`/`fix:` PRs into `main` as normal — **no tag is created**.
-2. release-please keeps an open **release PR** ("chore: release X.Y.Z"),
+1. release-please keeps an open **release PR** ("chore: release X.Y.Z"),
    recalculating the next version and changelog on every merge.
-3. When you're ready to ship, **merge the release PR** — that (and only that)
+1. When you're ready to ship, **merge the release PR** — that (and only that)
    creates the `vX.Y.Z` tag and the GitHub Release.
 
 So `main` is not released per-commit: changes accumulate into the release PR,

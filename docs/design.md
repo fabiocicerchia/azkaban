@@ -6,13 +6,13 @@ Five independent mechanisms, each covering a gap the previous one structurally
 cannot. None of them is a container runtime — there is no image, no root, and no
 daemon between you and the tool.
 
-| Layer | Kernel feature | Enforces | Bypassed by |
-|-------|----------------|----------|-------------|
-| 1. Mount view | mount namespace (bubblewrap) | *what paths exist at all* | nothing in-process; the view is built before the tool starts |
-| 2. Namespaces | pid / ipc / uts / cgroup / user (net optional) | *what the process can see and signal* | shared net by default |
-| 3. Landlock | Landlock LSM, ABI v5 | *what may be opened, and how* | paths already open; `--no-landlock` |
-| 4. Overlay | overlayfs upper layer on tmpfs | *whether writes and deletes are durable* | `--persist`; project dir by design |
-| 5. Socket filter | userspace HTTP proxy | *what a container daemon will do on the tool's behalf* | `--unfiltered-container-socket`; TOCTOU on bind paths |
+| Layer            | Kernel feature                                 | Enforces                                               | Bypassed by                                                  |
+| ---------------- | ---------------------------------------------- | ------------------------------------------------------ | ------------------------------------------------------------ |
+| 1. Mount view    | mount namespace (bubblewrap)                   | *what paths exist at all*                              | nothing in-process; the view is built before the tool starts |
+| 2. Namespaces    | pid / ipc / uts / cgroup / user (net optional) | *what the process can see and signal*                  | shared net by default                                        |
+| 3. Landlock      | Landlock LSM, ABI v5                           | *what may be opened, and how*                          | paths already open; `--no-landlock`                          |
+| 4. Overlay       | overlayfs upper layer on tmpfs                 | *whether writes and deletes are durable*               | `--persist`; project dir by design                           |
+| 5. Socket filter | userspace HTTP proxy                           | *what a container daemon will do on the tool's behalf* | `--unfiltered-container-socket`; TOCTOU on bind paths        |
 
 Layers 1–3 answer *where* a tool may write. Layer 4 exists because that is not
 the same question as *what it may destroy* — see [the incident](../README.md#this-actually-happened).
@@ -28,7 +28,7 @@ bwrap applies its arguments **in order**, and a later bind overlays an earlier
 one. Three protections depend on that ordering, so the sequence in `outer()` is
 load-bearing, not stylistic:
 
-```
+```text
 --tmpfs  ~                       # everything under $HOME disappears
 --bind   ~/.config               # …selected dirs come back writable
 --ro-bind ~/.config/azkaban      # …but the trusted config is re-frozen on top
@@ -163,7 +163,7 @@ azkaban's credential model was hide or hand over. `docs/configuration.md`
 concedes the consequence directly: for `gh pr create` you would have to hand the
 jail a token via `env GH_TOKEN`, which **is** stealable.
 
-```
+```text
 # ~/.config/azkaban/config
 credential github          # clone and fetch
 credential github write    # ...and push
@@ -276,7 +276,7 @@ destroyed, and does nothing to stop one being read and sent somewhere.
 azkaban --net-host api.anthropic.com --net-host '*.githubusercontent.com' claude
 ```
 
-```
+```text
 # ~/.config/azkaban/config — the every-run form
 net api.anthropic.com
 net *.githubusercontent.com
@@ -337,12 +337,12 @@ The jail now describes itself. Four things are bound **read-only** under
 `/run/azkaban`, for the same reason `~/.config/azkaban` is frozen — a file that
 says what the policy is must not be one the agent can rewrite:
 
-| | |
-| --- | --- |
-| `policy.json` | the resolved policy, machine-readable |
-| `README.md` | the same thing in the second person, for a model to read |
-| `claude-hook.sh` | a Claude Code `PostToolUse` hook |
-| `azkaban` | the binary itself |
+|                  |                                                          |
+| ---------------- | -------------------------------------------------------- |
+| `policy.json`    | the resolved policy, machine-readable                    |
+| `README.md`      | the same thing in the second person, for a model to read |
+| `claude-hook.sh` | a Claude Code `PostToolUse` hook                         |
+| `azkaban`        | the binary itself                                        |
 
 `AZKABAN_JAIL=1` and `AZKABAN_POLICY` are set in the environment, so "am I
 jailed?" costs no file read.
@@ -450,7 +450,7 @@ opposite of what the tool is for.
 
 `--elevate` adds a layer **above** the floor, off by default:
 
-```
+```text
 openat()  ──►  seccomp filter  ──►  supervisor (outer process, trusted)
                                       │
                     ┌─────────────────┼──────────────────┐
@@ -482,15 +482,15 @@ supervisor opened and can name.
 
 ### Deliberate narrowings
 
-| | why |
-| --- | --- |
-| **Reads only** | A supervisor-opened write descriptor would bypass the overlay as well as Landlock, so one mistyped path would write to the real file on the host — the exact accident this tool exists to prevent. A write intent is passed through to the floor, not refused and not granted. |
-| **`RESOLVE_NO_SYMLINKS`** | The path a human approved has to be the path that is opened. This costs the ability to approve a path that legitimately runs through a symlink, which is the right way round for a security prompt. |
-| **No `O_CREAT` / `O_TRUNC`** | The supervisor can only ever hand back something that already exists. |
-| **`/dev/tty`, not stdin** | stdin belongs to the tool in the jail. A prompt reading from it would eat the agent's input; one reading from a piped stdin would answer itself. With no tty, every request is denied and that is said once. |
-| **10 prompts/s, burst 5** | A tool in a loop can generate thousands of denied opens a second. A prompt storm is unusable, and it is also how you get a human to approve something by exhausting them. Over the limit is a denial, not a queue. |
-| **One decision per path** | Answered once, remembered for the run, bounded at 1024 paths. |
-| **A relative path against a real dirfd is not resolved** | Fetching another process's descriptor is a whole mechanism, and the case is almost always the project directory, which is in the allowlist already. It falls through to the floor. |
+|                                                          | why                                                                                                                                                                                                                                                                            |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Reads only**                                           | A supervisor-opened write descriptor would bypass the overlay as well as Landlock, so one mistyped path would write to the real file on the host — the exact accident this tool exists to prevent. A write intent is passed through to the floor, not refused and not granted. |
+| **`RESOLVE_NO_SYMLINKS`**                                | The path a human approved has to be the path that is opened. This costs the ability to approve a path that legitimately runs through a symlink, which is the right way round for a security prompt.                                                                            |
+| **No `O_CREAT` / `O_TRUNC`**                             | The supervisor can only ever hand back something that already exists.                                                                                                                                                                                                          |
+| **`/dev/tty`, not stdin**                                | stdin belongs to the tool in the jail. A prompt reading from it would eat the agent's input; one reading from a piped stdin would answer itself. With no tty, every request is denied and that is said once.                                                                   |
+| **10 prompts/s, burst 5**                                | A tool in a loop can generate thousands of denied opens a second. A prompt storm is unusable, and it is also how you get a human to approve something by exhausting them. Over the limit is a denial, not a queue.                                                             |
+| **One decision per path**                                | Answered once, remembered for the run, bounded at 1024 paths.                                                                                                                                                                                                                  |
+| **A relative path against a real dirfd is not resolved** | Fetching another process's descriptor is a whole mechanism, and the case is almost always the project directory, which is in the allowlist already. It falls through to the floor.                                                                                             |
 
 Every decision lands in the run log as an `elevation` event, and the run ends
 with an `elevation_summary` counting grants, denials and pass-throughs. A
@@ -660,7 +660,7 @@ the overlay, so every run starts logged out.
 azkaban --persist-path .claude/.credentials.json claude
 ```
 
-```
+```text
 # ~/.config/azkaban/config — for every run
 persist .claude/.credentials.json
 ```
@@ -697,7 +697,7 @@ yours:
 >
 > **Confirmed lost**
 >
-> ```
+> ```text
 > .claude.json says:  firstStartTime 2026-02-10, 620 startups, 50 projects
 > ~/.claude/projects: 2 dirs — both created in the last 10 minutes
 > MISSING: settings.json, statsig, shell-snapshots, todos, plugins, ide, CLAUDE.md
@@ -714,12 +714,12 @@ default landed.
 
 Four things changed:
 
-| Lesson | Change |
-|---|---|
-| Confining *where* writes land is not confining *what gets destroyed* | writable `$HOME` entries are throwaway overlays by default |
-| A non-zero exit code is not evidence that nothing happened | `TestPersist_ExitCodeIsNotEvidence` pins both halves of the trap |
-| Testing a containment tool against real data is backwards — the mechanism you trust for safety is the one under test | the whole suite runs against a fake `$HOME` with a tripwire |
-| On-by-default exposure is exposure you never chose | container sockets became opt-in |
+| Lesson                                                                                                               | Change                                                           |
+| -------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| Confining *where* writes land is not confining *what gets destroyed*                                                 | writable `$HOME` entries are throwaway overlays by default       |
+| A non-zero exit code is not evidence that nothing happened                                                           | `TestPersist_ExitCodeIsNotEvidence` pins both halves of the trap |
+| Testing a containment tool against real data is backwards — the mechanism you trust for safety is the one under test | the whole suite runs against a fake `$HOME` with a tripwire      |
+| On-by-default exposure is exposure you never chose                                                                   | container sockets became opt-in                                  |
 
 The general form, worth keeping in mind when extending this tool: **a sandbox
 that behaves exactly as designed can still lose your data**, if the design
@@ -730,13 +730,13 @@ answered the wrong question.
 Five independent mechanisms, each covering a gap the previous one structurally
 cannot. No image, no root, no daemon between you and the tool.
 
-| Layer | Kernel feature | Enforces |
-|-------|----------------|----------|
-| 1. Mount view | mount namespace (bubblewrap) | *what paths exist at all* |
-| 2. Namespaces | pid / ipc / uts / cgroup / user (net optional) | *what the process can see and signal* |
-| 3. Landlock | Landlock LSM, ABI v5 | *what may be opened, and how* |
-| 4. Overlay | overlayfs upper layer on tmpfs | *whether writes and deletes are durable* |
-| 5. Socket filter | userspace HTTP proxy | *what a container daemon will do on the tool's behalf* |
+| Layer            | Kernel feature                                 | Enforces                                               |
+| ---------------- | ---------------------------------------------- | ------------------------------------------------------ |
+| 1. Mount view    | mount namespace (bubblewrap)                   | *what paths exist at all*                              |
+| 2. Namespaces    | pid / ipc / uts / cgroup / user (net optional) | *what the process can see and signal*                  |
+| 3. Landlock      | Landlock LSM, ABI v5                           | *what may be opened, and how*                          |
+| 4. Overlay       | overlayfs upper layer on tmpfs                 | *whether writes and deletes are durable*               |
+| 5. Socket filter | userspace HTTP proxy                           | *what a container daemon will do on the tool's behalf* |
 
 Layers 1–3 answer *where* a tool may write. Layer 4 exists because that is not
 the same question as *what it may destroy*.

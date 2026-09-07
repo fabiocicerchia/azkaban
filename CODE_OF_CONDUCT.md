@@ -8,4 +8,4 @@ behavior can be reported privately to the maintainers via
 or by direct message. Maintainers will review and act on reports
 confidentially.
 
-Full text: https://www.contributor-covenant.org/version/2/1/code_of_conduct/
+Full text: <https://www.contributor-covenant.org/version/2/1/code_of_conduct/>
