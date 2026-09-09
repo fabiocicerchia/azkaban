@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/fabiocicerchia/azkaban/compare/v1.1.1...v1.2.0) (2026-09-09)
+
+
+### Features
+
+* **packaging:** man page, OS packages and a staged install ([#63](https://github.com/fabiocicerchia/azkaban/issues/63)) ([e22c10f](https://github.com/fabiocicerchia/azkaban/commit/e22c10fcf271b8cf98ccfcf14eabd51bac755770))
+
 ## [1.1.1](https://github.com/fabiocicerchia/azkaban/compare/v1.1.0...v1.1.1) (2026-09-04)
 
 ### Bug Fixes
