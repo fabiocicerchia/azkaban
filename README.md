@@ -23,7 +23,7 @@ It is small and auditable: the whole security model fits in two files
 > **Linux only, and it is a fence, not a vault.** The default posture is
 > arranged against a confused tool, not a hostile one: the network is shared,
 > the terminal is shared, and the `KNOWN ESCAPE VECTORS` block at the bottom
-> of `main.go` lists what is deliberately left open. Without bubblewrap ≥ 0.9
+> of `main.go` lists what is deliberately left open. Without bubblewrap ≥ 0.11
 > and kernel ≥ 5.11 the write-discarding overlay is unavailable and writes are
 > real — azkaban warns, and the warning matters.
 
@@ -80,7 +80,7 @@ More in [`docs/design.md`](docs/design.md).
   hidden by default rather than exposed by default.
 - **Discards writes by default.** The allowlisted `$HOME` directories are
   writable through a throwaway overlay: the tool sees a working filesystem, and
-  the writes evaporate on exit. Caveat: this needs bubblewrap ≥ 0.9 and kernel
+  the writes evaporate on exit. Caveat: this needs bubblewrap ≥ 0.11 and kernel
   ≥ 5.11, and state you *wanted* to keep is discarded too — that is what
   `--persist-path` is for.
 - **Masks credential stores** that live inside directories bound wholesale.
@@ -109,7 +109,7 @@ More in [`docs/design.md`](docs/design.md).
 
 - Linux with unprivileged user namespaces enabled
 - `bwrap` (bubblewrap) at `/usr/bin/bwrap`
-- **bubblewrap ≥ 0.9 and kernel ≥ 5.11** for the default write-discarding
+- **bubblewrap ≥ 0.11 and kernel ≥ 5.11** for the default write-discarding
   overlay. Without either, azkaban warns and falls back to real writes — a
   working jail, but one where a destructive tool destroys real data.
 - A kernel with Landlock (v5 best-effort; older kernels degrade gracefully,
@@ -144,7 +144,7 @@ point):
 
 ```console
 $ azkaban --dry-run -- sh -c 'echo hi'
-azkaban: WARNING: this bwrap has no --tmp-overlay; falling back to real writes. Upgrade bubblewrap (>= 0.9) or pass --persist to silence this.
+azkaban: WARNING: this bwrap has no --tmp-overlay; falling back to real writes. Upgrade bubblewrap (>= 0.11) or pass --persist to silence this.
 /usr/bin/bwrap --clearenv --setenv HOME /home/you --setenv PATH ... \
   --ro-bind /usr /usr --ro-bind /etc /etc --dev /dev --proc /proc \
   --tmpfs /tmp --tmpfs /run \
@@ -312,7 +312,7 @@ More in [`docs/getting-started.md`](docs/getting-started.md).
 
 **`azkaban: WARNING: this bwrap has no --tmp-overlay; falling back to real writes.`**
 The default protection is gone: writes to the allowlisted `$HOME` directories
-now land on disk. Upgrade bubblewrap to ≥ 0.9 (and the kernel to ≥ 5.11 for
+now land on disk. Upgrade bubblewrap to ≥ 0.11 (and the kernel to ≥ 5.11 for
 unprivileged overlayfs), or pass `--persist` to say you meant it. Check with
 `azkaban --dry-run | grep -c tmp-overlay` — `0` means writes are real.
 

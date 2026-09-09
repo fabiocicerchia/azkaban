@@ -160,9 +160,10 @@ func llJoin(what string, paths []string) string {
 }
 
 // bwrapHas reports whether this bubblewrap advertises a flag, e.g. --tmp-overlay
-// (bubblewrap >= 0.9). Note it does NOT prove the kernel allows unprivileged
-// overlayfs (Linux >= 5.11); if the kernel refuses, bwrap fails with a clear
-// error and --persist is the way out.
+// (bubblewrap >= 0.11, which is where the overlay options landed). Note it
+// does NOT prove the kernel allows unprivileged overlayfs (Linux >= 5.11); if
+// the kernel refuses, bwrap fails with a clear error and --persist is the way
+// out.
 var bwrapHelp = sync.OnceValue(func() string {
 	// A bubblewrap that cannot answer --help advertises nothing, which is the
 	// same conservative answer as a build without the flag.
