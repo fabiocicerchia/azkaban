@@ -325,7 +325,7 @@ func outer(argv []string) {
 	// Note the project dir is NEVER overlaid; it is the workspace, and it has git.
 	if o.overlay && !bwrapHas("--tmp-overlay") {
 		auditLog.degraded("no-tmp-overlay",
-			"this bwrap has no --tmp-overlay; falling back to real writes. Upgrade bubblewrap (>= 0.9) or pass --persist to "+
+			"this bwrap has no --tmp-overlay; falling back to real writes. Upgrade bubblewrap (>= 0.11) or pass --persist to "+
 				"silence this.")
 		o.overlay = false
 	}
