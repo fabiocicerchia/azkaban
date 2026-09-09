@@ -1,0 +1,271 @@
+.TH AZKABAN 1 "2026-09" "azkaban" "User Commands"
+.SH NAME
+azkaban \- a jail for AI CLIs
+.SH SYNOPSIS
+.B azkaban
+.RI [ flags ]
+.RB [ \-\- ]
+.I command
+.RI [ args ...]
+.br
+.B azkaban why
+.RI [ flags ]
+.I path|host|port
+.br
+.B azkaban rollback
+.RB { show | restore }
+.SH DESCRIPTION
+.B azkaban
+confines a coding agent (Claude Code, aider and the like) to a single project
+directory using bubblewrap and Landlock, so that a misbehaving or hallucinating
+tool cannot read your private keys, exfiltrate credentials, or delete a home
+directory.
+.PP
+The primary threat it is arranged around is accidental destruction \(em an agent
+that misreads a path and deletes the wrong folder \(em not a determined
+attacker. Network isolation is secondary and off by default.
+.PP
+By default writes to allowlisted directories under
+.I $HOME
+land on a throwaway overlay: the tool sees them as writable, but the writes
+evaporate on exit and cannot destroy real data.
+.SH OPTIONS
+.SS Devices and display
+.TP
+.B \-\-no\-gpu
+Do not bind GPU devices
+.RI ( /dev/nvidia* ", " /dev/dri ).
+.TP
+.B \-\-display
+Pass through X11/Wayland,
+.IR XAUTHORITY ,
+and the Wayland and PulseAudio sockets from
+.IR /run/user .
+Off by default; the ssh agent, gpg-agent, dbus and any rootless container socket
+in there stay hidden.
+.SS Filesystem
+.TP
+.B \-\-persist
+Let writes to
+.I $HOME
+allowlist directories really land on disk, instead of the throwaway overlay.
+.TP
+.BI \-\-ro " PATH"
+Bind one extra path read-only, for this run only. Repeatable.
+.TP
+.BI \-\-rw " PATH"
+The same, writable (still overlaid unless
+.BR \-\-persist ).
+Repeatable, relative to
+.IR $HOME ;
+.I /
+and
+.I $HOME
+themselves are refused. Un-masks any credential store named.
+.TP
+.BI \-\-persist\-path " PATH"
+Exempt one path from the throwaway overlay: writes to it land on the host while
+everything else still evaporates. For the file a tool must keep across runs (a
+login token) without
+.B \-\-persist
+making the whole allowlist destroyable. Repeatable; name the file, not its
+directory.
+.TP
+.B \-\-rollback
+Snapshot the writable
+.I $HOME
+roots either side of the run and let writes land for real, so that destruction
+becomes a diff to review rather than a loss. An alternative to the default
+overlay, not a layer on it. Review and undo with
+.BR "azkaban rollback show|restore" .
+.SS Container and unix sockets
+.TP
+.B \-\-bind\-docker
+Bind the Docker socket behind the filtering proxy. Off by default; containerd is
+not offered, as it speaks gRPC, which the proxy cannot inspect.
+.TP
+.B \-\-bind\-podman
+The same, for Podman's Docker-compatible REST socket.
+.TP
+.B \-\-unfiltered\-container\-socket
+Bind the socket with no filtering at all. This says how to bind, not which \(em
+pair it with
+.B \-\-bind\-docker
+or
+.BR \-\-bind\-podman .
+.TP
+.BI \-\-unix\-socket " PATH"
+Bind one unix socket, and nothing around it \(em for "this tool may reach
+Postgres at
+.IR /tmp/.s.PGSQL.5432 ""
+without granting
+.IR /tmp .
+Repeatable.
+.TP
+.BI \-\-unix\-socket\-dir " DIR"
+The same, for a directory whose socket names are generated at runtime
+(PID-suffixed paths). Wider by exactly one directory, which is why both exist.
+Repeatable.
+.SS Credentials
+.TP
+.B \-\-ssh\-agent
+Forward the agent, plus
+.I known_hosts
+read-only, so that git push over ssh works. The jail talks to a filtering proxy
+in the outer process that forwards only "list keys" and "sign this", refusing
+add, remove, lock and extensions. The keys stay on the host either way; the jail
+gets a signing oracle, and that oracle still authenticates as you to every host
+it can open.
+.TP
+.B \-\-ssh\-agent\-confirm
+As above, and ask on the terminal before every signature. This is
+.B "ssh-add -c"
+for a jail that cannot reach the host's prompt.
+.TP
+.B \-\-ssh\-agent\-raw
+Bind the real agent socket with no filter \(em the pre-proxy behaviour. Anything
+in the jail can then add, remove or lock keys as well as sign with them.
+.TP
+.BI \-\-credential " PROVIDER"
+Let the jail use a host credential without giving it the secret: it talks plain
+HTTP to a loopback broker, which attaches the real token and makes the TLS
+connection itself.
+.B github
+is the only provider so far; append
+.B " write"
+to permit push, which the default read-only policy refuses. Repeatable.
+.SS Network
+.TP
+.B \-\-no\-net
+Isolate the network in a new namespace. This breaks internet access.
+.TP
+.BI \-\-net\-ports " LIST"
+Allow outbound TCP only to these ports (comma-separated), enforced by Landlock.
+Blocks localhost services and LAN scanning. UDP, and therefore DNS, is
+unaffected. Needs the Landlock stage.
+.TP
+.BI \-\-net\-host " HOST"
+Allow outbound traffic only to this host, through a CONNECT proxy in the outer
+process. Repeatable;
+.B *.example.com
+covers subdomains but not the bare domain. TLS is not intercepted: the target is
+checked and raw bytes relayed. Sets
+.I HTTPS_PROXY
+in the jail and narrows
+.B \-\-net\-ports
+to the proxy, so a client that ignores the variable is refused by the kernel
+rather than connecting directly. Needs the Landlock stage.
+.SS Resources and environment
+.TP
+.B \-\-keep\-env
+Inherit the whole host environment. The default is to clear it and pass only
+.IR HOME ", " PATH ", " TERM ", " LANG
+and similar; add more with
+.B "env NAME"
+lines in
+.IR ~/.config/azkaban/config .
+.TP
+.BI \-\-mem\-max " SIZE"
+Cap total memory with a cgroup, e.g.
+.BR 8G .
+The overlay writes to tmpfs, i.e. RAM, and this is the only thing that bounds
+it. Off by default: a cap also disables swap for the jail, so a workload that
+would have paged out is killed instead.
+.TP
+.B \-\-no\-rlimits
+Do not cap file size or process count. The default caps them, because the
+overlay writes to RAM and a runaway write can OOM the host.
+.TP
+.B \-\-allow\-userns
+Permit nested user namespaces, needed by Chrome- and Electron-based tools.
+.SS Enforcement and diagnostics
+.TP
+.B \-\-no\-landlock
+Skip the Landlock stage.
+.TP
+.B \-\-elevate
+Let a denied read be approved on the terminal instead of ending the run. A
+seccomp supervisor in the outer process traps opens, asks about any path outside
+the allowlist, and hands back a read-only descriptor it opened itself \(em so a
+grant is bounded by your own permissions and cannot exceed them. Landlock stays
+the floor. Writes are never elevated. Off by default, and rate-limited to 10
+prompts per second.
+.TP
+.B \-\-dry\-run
+Print the bubblewrap command instead of running it.
+.TP
+.B \-\-no\-guidance
+Do not describe the jail to the tool inside it. By default
+.I /run/azkaban
+holds a read-only
+.IR policy.json ,
+a README, a Claude Code PostToolUse hook and this binary, so that a confused
+agent can run
+.B "azkaban why \-\-self"
+instead of guessing at an error.
+.TP
+.B \-\-no\-audit
+Do not record this run. Every run is otherwise written as JSONL to
+.IR $XDG_STATE_HOME/azkaban/audit/ :
+the resolved policy, the mode flags, every degradation, every docker-filter
+decision and the exit code.
+.B "audit off"
+in the config turns it off for good.
+.TP
+.BR \-h ", " \-\-help
+Print the flag reference.
+.SH COMMANDS
+.TP
+.B azkaban why
+Explain what the jail would do with one path, host or port, without starting
+one. See
+.B "azkaban why \-h"
+for its flags.
+.TP
+.B azkaban rollback
+List, review and undo what a
+.B \-\-rollback
+run changed.
+.SH FILES
+.TP
+.I ~/.config/azkaban/config
+Per-run defaults:
+.BR ro ", " rw ", " persist ", " net ", " "unix-socket" ", " credential ", " env
+and
+.B audit
+lines.
+.TP
+.I $XDG_STATE_HOME/azkaban/audit/
+Append-only JSONL record of every run.
+.TP
+.I /run/azkaban
+Guidance handed to the tool inside the jail.
+.SH EXIT STATUS
+The exit status of the confined
+.IR command .
+.SH EXAMPLES
+.PP
+Run an agent confined to the current project:
+.PP
+.RS
+.B azkaban \-\- claude
+.RE
+.PP
+Allow git push, but nothing else on the network:
+.PP
+.RS
+.B azkaban \-\-credential "github write" \-\-net\-host github.com \-\- claude
+.RE
+.PP
+See what would happen to one path, without starting a jail:
+.PP
+.RS
+.B azkaban why ~/.config/azkaban/config
+.RE
+.SH SEE ALSO
+.BR bwrap (1),
+.BR landlock (7),
+.BR seccomp (2).
+Project documentation:
+.UR https://github.com/fabiocicerchia/azkaban
+.UE
