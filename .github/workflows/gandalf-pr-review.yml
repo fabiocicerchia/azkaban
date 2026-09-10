@@ -12,12 +12,9 @@ name: gandalf-pr-review
 on:
   pull_request:
 
-# read the code, post the review, and upload code-scanning results.
 permissions:
+  actions: read # private repo: upload-sarif reads this run's metadata
   contents: read
-  packages: read # pull the ghcr scanner image
-  pull-requests: write
-  security-events: write
 
 concurrency:
   group: gandalf-pr-${{ github.event.pull_request.number }}
@@ -25,6 +22,12 @@ concurrency:
 
 jobs:
   review:
+    # read the code, post the review, and upload code-scanning results.
+    permissions:
+      contents: read
+      packages: read # pull the ghcr scanner image
+      pull-requests: write
+      security-events: write
     name: gandalf inline review
     runs-on: ubuntu-latest
     steps:
@@ -34,4 +37,10 @@ jobs:
 
       - uses: fabiocicerchia/gandalf@08ab6976c4159bd56adcb7714f273d25c0e20c08  # v0.12.1
         with:
-          code-scanning: ${{ vars.GANDALF_INGEST_CODE_SCANNING || 'true' }}
+          # Code scanning needs GitHub Advanced Security on a private repo.
+          # Without it the ingest fails and takes the whole review down with
+          # it, after the inline comments — the part that needs none of this —
+          # have already been posted. The repo variable still overrides.
+          code-scanning: >-
+            ${{ vars.GANDALF_INGEST_CODE_SCANNING
+                || (github.event.repository.private && 'false' || 'true') }}
