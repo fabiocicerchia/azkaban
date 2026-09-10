@@ -1,6 +1,6 @@
 module azkaban
 
-go 1.25.0
+go 1.26.0
 
 // Pinned: the 1.26.6+ line carries the fixes for GO-2026-6218 (net/url),
 // GO-2026-6090 (crypto/tls), GO-2026-6089 and GO-2026-5026 (net/http, the
@@ -15,7 +15,7 @@ toolchain go1.26.8
 
 require (
 	github.com/landlock-lsm/go-landlock v0.10.0
-	golang.org/x/sys v0.47.0
+	golang.org/x/sys v0.48.0
 )
 
 require kernel.org/pub/linux/libs/security/libcap/psx v1.2.77 // indirect
