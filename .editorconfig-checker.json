@@ -1,8 +1,13 @@
 {
   "Exclude": [
     "^LICENSE$",
-    "^apply\\-settings\\.sh$",
-    "^check\\-drift\\.sh$"
+    "^guidance\\.go$",
+    "^main\\.go$",
+    "^main_test\\.go$",
+    "^rollback\\.go$",
+    "^sandbox_test\\.go$",
+    "^usage\\.go$",
+    "^why\\.go$"
   ],
   "Disable": {
     "IndentSize": true
