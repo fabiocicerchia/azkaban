@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.1](https://github.com/fabiocicerchia/azkaban/compare/v1.3.0...v1.3.1) (2026-09-10)
+
+
+### Bug Fixes
+
+* **coc:** restore the reporting address and the version deep-link ([#72](https://github.com/fabiocicerchia/azkaban/issues/72)) ([f32d107](https://github.com/fabiocicerchia/azkaban/commit/f32d1078c9239b2754ba3a6e1b2afff6588545dd))
+
 ## [1.3.0](https://github.com/fabiocicerchia/azkaban/compare/v1.2.0...v1.3.0) (2026-09-09)
 
 
