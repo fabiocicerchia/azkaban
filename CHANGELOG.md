@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.2](https://github.com/fabiocicerchia/azkaban/compare/v1.3.1...v1.3.2) (2026-09-11)
+
+
+### Bug Fixes
+
+* **release:** let the release PR carry a token that isn't GITHUB_TOKEN ([#76](https://github.com/fabiocicerchia/azkaban/issues/76)) ([a18e467](https://github.com/fabiocicerchia/azkaban/commit/a18e467c1e0356ad27391545cf3fe1cdded07bb5))
+
 ## [1.3.1](https://github.com/fabiocicerchia/azkaban/compare/v1.3.0...v1.3.1) (2026-09-10)
 
 
