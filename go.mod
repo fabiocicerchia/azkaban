@@ -14,7 +14,7 @@ go 1.26.0
 toolchain go1.26.8
 
 require (
-	github.com/landlock-lsm/go-landlock v0.10.0
+	github.com/landlock-lsm/go-landlock v0.10.1
 	golang.org/x/sys v0.48.0
 )
 

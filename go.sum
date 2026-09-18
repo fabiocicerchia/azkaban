@@ -1,5 +1,5 @@
-github.com/landlock-lsm/go-landlock v0.10.0 h1:1o2TDSEK/LRazMq9RNd6ln7WSoVx3ceOsATYkIuoeFE=
-github.com/landlock-lsm/go-landlock v0.10.0/go.mod h1:mn5GSi81Jf7yMs5WSi+SUi4sUeNLUGVdbT4Id6wXNQw=
+github.com/landlock-lsm/go-landlock v0.10.1 h1:MkvuYeTgGRpOnROAO9V2gV3C5lctFr6O0b9wnPWcQWk=
+github.com/landlock-lsm/go-landlock v0.10.1/go.mod h1:mn5GSi81Jf7yMs5WSi+SUi4sUeNLUGVdbT4Id6wXNQw=
 golang.org/x/sys v0.48.0 h1:bbX/i/6MgT9BVLM9RT1thmxL04yeTAhbEz4SyadbXoo=
 golang.org/x/sys v0.48.0/go.mod h1:hNLxWAXmnKAxqDtdwIYC4bM9oQPEecfsnNMuSxOs3og=
 kernel.org/pub/linux/libs/security/libcap/psx v1.2.77 h1:Z06sMOzc0GNCwp6efaVrIrz4ywGJ1v+DP0pjVkOfDuA=
