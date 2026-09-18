@@ -1,0 +1,23 @@
+# Backstage catalog entry, read by paved's scorecard plugin.
+#
+# Every check paved scores is derived from this file alone — no cluster
+# access, no CI credentials. What is absent here is absent from the score.
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: azkaban
+  description: >-
+      A jail for AI CLIs. azkaban confines a coding agent (Claude Code, aider, etc.) to a single project
+      directory using bubblewrap and Landlock, so a misbehaving or hallucinating tool cannot read your
+      ~/.ssh, exfiltrate credentials, or rm -rf your home.
+  annotations:
+    github.com/project-slug: fabiocicerchia/azkaban
+    backstage.io/source-location: url:https://github.com/fabiocicerchia/azkaban/
+  links:
+    - url: https://github.com/fabiocicerchia/azkaban
+      title: Source
+spec:
+  type: library
+  lifecycle: production
+  owner: group:default/kodebeat
+  system: oss-tools
