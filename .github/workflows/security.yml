@@ -52,9 +52,8 @@ jobs:
 
   codeql:
     # A github-actions bump cannot introduce a CVE here; dependency-review still runs.
-    if: ${{ !startsWith(github.head_ref, 'dependabot/github_actions/') }}
     # GitHub Advanced Security is required for this on private repos; skip instead of failing red.
-    if: ${{ !github.event.repository.private }}
+    if: ${{ !github.event.repository.private && !startsWith(github.head_ref, 'dependabot/github_actions/') }}
     name: codeql
     runs-on: ubuntu-latest
     steps:
