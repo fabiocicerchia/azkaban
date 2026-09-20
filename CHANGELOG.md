@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.3](https://github.com/fabiocicerchia/azkaban/compare/v1.3.2...v1.3.3) (2026-09-20)
+
+
+### Bug Fixes
+
+* **ci:** keep actions: read on the job that uploads sarif ([#89](https://github.com/fabiocicerchia/azkaban/issues/89)) ([2e8d6e9](https://github.com/fabiocicerchia/azkaban/commit/2e8d6e9bf28a261c5f66d495831a2e03e6ce44b6))
+
 ## [1.3.2](https://github.com/fabiocicerchia/azkaban/compare/v1.3.1...v1.3.2) (2026-09-11)
 
 
