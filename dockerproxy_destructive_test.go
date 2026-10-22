@@ -47,6 +47,10 @@ func newFakeDaemon(t *testing.T, projectDir string) *fakeDaemon {
 			w.Write([]byte(`{"Id":"exec123"}`))
 		case strings.HasSuffix(r.URL.Path, "/containers/json"):
 			w.Write([]byte(`[{"Id":"abc123"},{"Id":"external"}]`))
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/containers/abc"):
+			w.Write([]byte(`{"Id":"abc123"}`)) // inspect resolving a short ID
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/containers/"):
+			w.Write([]byte(`{"Id":"external"}`))
 		default:
 			w.Write([]byte(`{}`))
 		}
@@ -210,9 +214,12 @@ func TestDockerFilter_Ownership(t *testing.T) {
 			t.Errorf("%s: got %d", path, got)
 		}
 	}
-	if len(d.reached) != 0 {
-		t.Fatal("unowned operations reached daemon")
+	for _, got := range d.reached {
+		if !strings.HasPrefix(got, "GET /containers/external/json") {
+			t.Fatalf("unowned operation reached daemon: %s", got)
+		}
 	}
+	d.reached = nil
 	if got := d.do(t, "POST", "/containers/create?name=owned", `{}`); got != 200 {
 		t.Fatal(got)
 	}
@@ -223,6 +230,16 @@ func TestDockerFilter_Ownership(t *testing.T) {
 	}
 	if got := d.reached[1]; got != "POST /containers/abc123/start" {
 		t.Fatalf("name not pinned to ID: %s", got)
+	}
+	d.reached = nil
+	if got := d.do(t, "POST", "/containers/abc/stop", `{}`); got != 200 {
+		t.Fatalf("short ID of an owned container: got %d", got)
+	}
+	if got := d.reached[len(d.reached)-1]; got != "POST /containers/abc123/stop" {
+		t.Fatalf("short ID not pinned to full ID: %s", got)
+	}
+	if got := d.do(t, "POST", "/containers/abc123/exec", `{"Privileged":true}`); got != 403 {
+		t.Fatalf("privileged exec: got %d", got)
 	}
 }
 

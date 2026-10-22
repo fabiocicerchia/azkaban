@@ -64,7 +64,8 @@ your files as *your* user. The proxy is deny-by-default in three ways:
 Container and exec operations are restricted to immutable IDs created through
 this jail's proxy. Lists omit other containers, and recorded names are rewritten
 to their original IDs. Named volumes, volume driver options, `VolumesFrom`,
-global events and network management are denied. Use project bind mounts or
+links, joining existing networks, privileged exec, global events and network
+management are denied. Use project bind mounts or
 anonymous volumes. Images and build caches remain shared, and the bind-mount
 symlink race described in [the security design](design.md) remains: use a
 dedicated rootless daemon for hostile workloads or artefact isolation.

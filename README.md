@@ -98,7 +98,8 @@ More in [`docs/design.md`](docs/design.md).
 - **Limits Docker to jail-owned resources.** Container and exec operations use
   only IDs created through that jail's proxy. Names resolve to recorded immutable
   IDs and container lists exclude other workloads. Named volumes, volume-driver
-  options, `VolumesFrom`, global events and network management are denied; use
+  options, `VolumesFrom`, links, joining existing networks, privileged exec,
+  global events and network management are denied; use
   project bind mounts or anonymous volumes instead. Image and build caches remain
   shared and the bind-mount symlink race is not eliminated. Use a dedicated
   rootless daemon for hostile workloads or artifact isolation.

@@ -96,6 +96,11 @@ func TestFilterReasonContainer(t *testing.T) {
 		{"mount volume no device", `{"HostConfig":{"Mounts":[{"Type":"volume",` +
 			`"VolumeOptions":{"DriverConfig":{"Name":"local","Options":{"foo":"bar"}}}}]}}`, true},
 		{"volumes from", `{"HostConfig":{"VolumesFrom":["existing"]}}`, true},
+		{"link", `{"HostConfig":{"Links":["existing:alias"]}}`, true},
+		{"net named", `{"HostConfig":{"NetworkMode":"prod_default"}}`, true},
+		{"net none", `{"HostConfig":{"NetworkMode":"none"}}`, false},
+		{"endpoint named", `{"NetworkingConfig":{"EndpointsConfig":{"prod_default":{}}}}`, true},
+		{"endpoint bridge", `{"NetworkingConfig":{"EndpointsConfig":{"bridge":{}}}}`, false},
 		{"privileged", `{"HostConfig":{"Privileged":true}}`, true},
 		{"device", `{"HostConfig":{"Devices":[{"PathOnHost":"/dev/sda"}]}}`, true},
 		{"cap sys_admin", `{"HostConfig":{"CapAdd":["SYS_ADMIN"]}}`, true},
