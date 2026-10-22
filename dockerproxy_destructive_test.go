@@ -202,7 +202,10 @@ func TestDockerFilter_OrdinaryCleanupStillWorks(t *testing.T) {
 
 func TestDockerFilter_Ownership(t *testing.T) {
 	d := newFakeDaemon(t, t.TempDir())
-	for _, path := range []string{"/containers/external/json", "/containers/external/exec", "/exec/external/start", "/volumes", "/networks/create", "/commit?container=external"} {
+	for _, path := range []string{
+		"/containers/external/json", "/containers/external/exec", "/exec/external/start",
+		"/volumes", "/networks/create", "/commit?container=external",
+	} {
 		if got := d.do(t, "POST", "/v1.45"+path, `{}`); got != 403 {
 			t.Errorf("%s: got %d", path, got)
 		}

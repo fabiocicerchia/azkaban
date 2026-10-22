@@ -18,7 +18,8 @@ type dockerOwnership struct {
 
 func dockerPath(path string) string {
 	path = strings.TrimPrefix(path, "/")
-	if segment, rest, found := strings.Cut(path, "/"); found && strings.HasPrefix(segment, "v") && strings.ContainsAny(segment, "0123456789") {
+	segment, rest, found := strings.Cut(path, "/")
+	if found && strings.HasPrefix(segment, "v") && strings.ContainsAny(segment, "0123456789") {
 		return rest
 	}
 	return path
@@ -30,7 +31,9 @@ func (ownership *dockerOwnership) authorize(request *http.Request) string {
 	path := dockerPath(request.URL.Path)
 	parts := strings.Split(path, "/")
 	if parts[0] == "containers" {
-		if len(parts) == 2 && ((parts[1] == "create" && request.Method == "POST") || (parts[1] == "json" && request.Method == "GET")) {
+		creating := len(parts) == 2 && parts[1] == "create" && request.Method == http.MethodPost
+		listing := len(parts) == 2 && parts[1] == "json" && request.Method == http.MethodGet
+		if creating || listing {
 			return ""
 		}
 		if len(parts) < 2 {
@@ -44,7 +47,12 @@ func (ownership *dockerOwnership) authorize(request *http.Request) string {
 			return "unmodelled container endpoint"
 		}
 		if len(parts) == 3 {
-			allowed := map[string]bool{"json": true, "logs": true, "attach": true, "wait": true, "start": true, "stop": true, "kill": true, "restart": true, "pause": true, "unpause": true, "resize": true, "archive": true, "export": true, "top": true, "stats": true, "exec": true}
+			allowed := map[string]bool{
+				"json": true, "logs": true, "attach": true, "wait": true,
+				"start": true, "stop": true, "kill": true, "restart": true,
+				"pause": true, "unpause": true, "resize": true, "archive": true,
+				"export": true, "top": true, "stats": true, "exec": true,
+			}
 			if !allowed[parts[2]] {
 				return "unmodelled container operation"
 			}
@@ -54,8 +62,13 @@ func (ownership *dockerOwnership) authorize(request *http.Request) string {
 		request.URL.Path = prefix + strings.Join(parts, "/")
 		request.URL.RawPath = ""
 	}
-	if parts[0] == "exec" && (len(parts) != 3 || !ownership.execs[parts[1]] || (parts[2] != "start" && parts[2] != "json" && parts[2] != "resize")) {
-		return "exec session was not created by this jail"
+	if parts[0] == "exec" {
+		if len(parts) != 3 || !ownership.execs[parts[1]] {
+			return "exec session was not created by this jail"
+		}
+		if parts[2] != "start" && parts[2] != "json" && parts[2] != "resize" {
+			return "unmodelled exec operation"
+		}
 	}
 	if parts[0] == "commit" {
 		id := ownership.containers[request.URL.Query().Get("container")]
@@ -71,16 +84,20 @@ func (ownership *dockerOwnership) authorize(request *http.Request) string {
 
 func (ownership *dockerOwnership) record(response *http.Response) error {
 	path := dockerPath(response.Request.URL.Path)
-	createContainer := path == "containers/create" && response.Request.Method == "POST"
-	createExec := strings.HasPrefix(path, "containers/") && strings.HasSuffix(path, "/exec") && response.Request.Method == "POST"
-	list := path == "containers/json" && response.Request.Method == "GET"
+	createContainer := path == "containers/create" && response.Request.Method == http.MethodPost
+	createExec := strings.HasPrefix(path, "containers/") && strings.HasSuffix(path, "/exec") &&
+		response.Request.Method == http.MethodPost
+	list := path == "containers/json" && response.Request.Method == http.MethodGet
 	if response.StatusCode < 200 || response.StatusCode >= 300 || (!createContainer && !createExec && !list) {
 		return nil
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, maxCreateBody+1))
-	response.Body.Close()
+	closeErr := response.Body.Close()
 	if err != nil {
 		return err
+	}
+	if closeErr != nil {
+		return closeErr
 	}
 	if len(body) > maxCreateBody {
 		return fmt.Errorf("docker resource response exceeds limit")
