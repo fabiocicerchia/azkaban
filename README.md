@@ -94,6 +94,14 @@ More in [`docs/design.md`](docs/design.md).
 - **Clears the environment** but for a small allowlist, so an API key in the
   host environment does not follow the tool in. Extend it with `env NAME`
   lines in the config, or hand over everything with `--keep-env`.
+
+The Docker proxy now permits container and exec operations only on IDs created
+through that jail's proxy. Names are resolved to recorded immutable IDs, and
+container lists exclude other workloads. Named volumes, volume-driver options,
+`VolumesFrom`, global events and network management are denied. Use project
+bind mounts or anonymous volumes instead. Image and build caches remain shared;
+the existing bind-mount symlink race is not eliminated. Use a dedicated rootless
+daemon for hostile workloads or artifact isolation, not a shared host daemon.
 - **Caps file size, process count and file descriptors**, and optionally total
   memory with `--mem-max`. Caveat: `RLIMIT_FSIZE` is per-file, so a loop
   creating many small files still fills the overlay; and a memory cap also

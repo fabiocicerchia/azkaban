@@ -61,9 +61,13 @@ your files as *your* user. The proxy is deny-by-default in three ways:
   allowed — containers and images are rebuildable, and blocking them would break
   `--rm` cleanup and every ordinary workflow.
 
-It is **not** an authorization boundary for the rest of the API. The jail can
-still start, `exec` into, and `rm` your **pre-existing** containers — including
-any you created earlier with dangerous mounts.
+Container and exec operations are restricted to immutable IDs created through
+this jail's proxy. Lists omit other containers, and recorded names are rewritten
+to their original IDs. Named volumes, volume driver options, `VolumesFrom`,
+global events and network management are denied. Use project bind mounts or
+anonymous volumes. Images and build caches remain shared, and the bind-mount
+symlink race described below remains: use a dedicated rootless daemon when
+running hostile workloads or when artefact isolation matters.
 
 ## Why libpod is refused
 
