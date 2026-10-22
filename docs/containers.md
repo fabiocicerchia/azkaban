@@ -66,8 +66,8 @@ this jail's proxy. Lists omit other containers, and recorded names are rewritten
 to their original IDs. Named volumes, volume driver options, `VolumesFrom`,
 global events and network management are denied. Use project bind mounts or
 anonymous volumes. Images and build caches remain shared, and the bind-mount
-symlink race described below remains: use a dedicated rootless daemon when
-running hostile workloads or when artefact isolation matters.
+symlink race described in [the security design](design.md) remains: use a
+dedicated rootless daemon for hostile workloads or artefact isolation.
 
 ## Why libpod is refused
 

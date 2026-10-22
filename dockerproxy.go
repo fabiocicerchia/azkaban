@@ -154,6 +154,7 @@ func dockerFilterHandler(proxy http.Handler, rootReal string, ownership *dockerO
 			//nolint:errcheck // the body is read or abandoned either way; a failed close costs a pooled connection
 			r.Body.Close()
 			if err != nil || len(body) > maxCreateBody {
+				dockerDecision(r, "denied", "could not read request body")
 				denyJSON(w, "could not read request body")
 				return
 			}
