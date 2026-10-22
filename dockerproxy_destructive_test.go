@@ -215,7 +215,7 @@ func TestDockerFilter_Ownership(t *testing.T) {
 		}
 	}
 	for _, got := range d.reached {
-		if !strings.HasPrefix(got, "GET /containers/external/json") {
+		if got != "GET /containers/external/json" { // the proxy's own unversioned lookup
 			t.Fatalf("unowned operation reached daemon: %s", got)
 		}
 	}
