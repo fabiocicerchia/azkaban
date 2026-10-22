@@ -19,10 +19,6 @@
 //     if they would mount a host path outside cwd, grant privilege, add dangerous
 //     capabilities, pass through host devices, relax seccomp/apparmor, or share
 //     the host net/pid/ipc/userns namespaces.
-//
-// What this is NOT: an authorization boundary for the rest of the API. Allowed
-// endpoints still let the jail start, exec into and delete PRE-EXISTING host
-// containers — including any created earlier with `-v /:/host`.
 package main
 
 import (
@@ -59,19 +55,25 @@ func startDockerFilterProxy(realSock, cwd string) (string, error) {
 
 	target, _ := url.Parse("http://docker") //nolint:errcheck // a constant URL, parsed at every start
 	proxy := httputil.NewSingleHostReverseProxy(target)
-	proxy.Transport = &http.Transport{
+	transport := &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, "unix", realSock)
 		},
 	}
+	proxy.Transport = transport
 	proxy.FlushInterval = -1 // stream pulls/build/logs/attach without buffering
+	ownership := &dockerOwnership{
+		containers: map[string]string{}, execs: map[string]bool{},
+		inspect: daemonInspect(&http.Client{Transport: transport, Timeout: 10 * time.Second}),
+	}
+	proxy.ModifyResponse = ownership.record
 
 	rootReal := realPath(cwd)
 	// Timeouts bound how long one jailed request can pin a goroutine and an fd.
 	// No WriteTimeout: docker legitimately streams pulls, builds and logs for
 	// minutes, and a deadline there would cut them off mid-transfer.
 	srv := &http.Server{
-		Handler:           dockerFilterHandler(proxy, rootReal),
+		Handler:           dockerFilterHandler(proxy, rootReal, ownership),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       2 * time.Minute,
 	}
@@ -92,9 +94,9 @@ const maxCreateBody = 4 << 20
 // or host-privileged code through bodies this filter does not model.
 var allowedRoots = map[string]bool{
 	"containers": true, "images": true, "exec": true, "build": true,
-	"volumes": true, "networks": true, "commit": true, "distribution": true,
-	"version": true, "info": true, "_ping": true, "events": true,
-	"system": true, "auth": true,
+	"commit": true, "distribution": true,
+	"version": true, "info": true, "_ping": true,
+	"auth": true,
 	// buildkit's client-driven build channel; carries no host paths.
 	"session": true, "grpc": true,
 }
@@ -139,7 +141,7 @@ func destructiveReason(r *http.Request) string {
 // the checks get cheaper to fail: the destructive verbs, then the endpoint
 // allowlist, then the create bodies. Every denial is printed to the host's
 // stderr, because a silently filtered API call looks like a docker bug.
-func dockerFilterHandler(proxy http.Handler, rootReal string) http.Handler {
+func dockerFilterHandler(proxy http.Handler, rootReal string, ownership *dockerOwnership) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if reason := destructiveReason(r); reason != "" {
 			dockerDecision(r, "denied", reason)
@@ -152,10 +154,11 @@ func dockerFilterHandler(proxy http.Handler, rootReal string) http.Handler {
 			return
 		}
 		if guarded(r) {
-			body, err := io.ReadAll(io.LimitReader(r.Body, maxCreateBody))
+			body, err := io.ReadAll(io.LimitReader(r.Body, maxCreateBody+1))
 			//nolint:errcheck // the body is read or abandoned either way; a failed close costs a pooled connection
 			r.Body.Close()
-			if err != nil {
+			if err != nil || len(body) > maxCreateBody {
+				dockerDecision(r, "denied", "could not read request body")
 				denyJSON(w, "could not read request body")
 				return
 			}
@@ -166,6 +169,11 @@ func dockerFilterHandler(proxy http.Handler, rootReal string) http.Handler {
 			}
 			r.Body = io.NopCloser(bytes.NewReader(body))
 			r.ContentLength = int64(len(body))
+		}
+		if reason := ownership.authorize(r); reason != "" {
+			dockerDecision(r, "denied", reason)
+			denyJSON(w, reason)
+			return
 		}
 		// Allowed calls are recorded too, and only in the run record. Printing
 		// every permitted API call to stderr would drown the denials that
@@ -194,8 +202,8 @@ func dockerDecision(r *http.Request, decision, reason string) {
 	})
 }
 
-// guarded - Reports whether a request creates a container or volume — the only
-// two endpoints that can introduce a host bind mount. Paths are
+// guarded - Reports whether a request creates a container, volume or exec
+// session — the endpoints whose bodies can grant host access. Paths are
 // version-prefixed (e.g. /v1.45/containers/create), so match on the suffix.
 func guarded(r *http.Request) bool {
 	if r.Method != http.MethodPost {
@@ -203,7 +211,8 @@ func guarded(r *http.Request) bool {
 	}
 	p := r.URL.Path
 	return strings.HasSuffix(p, "/containers/create") ||
-		strings.HasSuffix(p, "/volumes/create")
+		strings.HasSuffix(p, "/volumes/create") ||
+		strings.HasSuffix(p, "/exec")
 }
 
 // denyJSON - Answers 403 in docker's own error shape, so the client inside the
@@ -231,6 +240,9 @@ func filterReason(path string, body []byte, rootReal string) string {
 	if strings.HasSuffix(path, "/volumes/create") {
 		return volumeReason(body, rootReal)
 	}
+	if strings.HasSuffix(path, "/exec") {
+		return execReason(body)
+	}
 	return containerReason(body, rootReal)
 }
 
@@ -241,11 +253,35 @@ func filterReason(path string, body []byte, rootReal string) string {
 // what is policed can be read on its own — it is the filter's threat model,
 // and a field missing from here is a field nothing checks.
 type containerCreateBody struct {
-	HostConfig *containerHostConfig `json:"HostConfig"`
+	HostConfig       *containerHostConfig `json:"HostConfig"`
+	NetworkingConfig *struct {
+		EndpointsConfig map[string]json.RawMessage `json:"EndpointsConfig"`
+	} `json:"NetworkingConfig"`
+}
+
+// defaultNetworks are the only networks a jailed container may join; any other
+// name is a network the jail did not create.
+var defaultNetworks = map[string]bool{"": true, "default": true, "bridge": true, "none": true}
+
+// execReason - Refuses exec sessions that would run with more privilege than
+// the container was created with.
+func execReason(body []byte) string {
+	var e struct {
+		Privileged bool `json:"Privileged"`
+	}
+	if err := json.Unmarshal(body, &e); err != nil {
+		return "unparsable exec-create body"
+	}
+	if e.Privileged {
+		return "docker exec --privileged is not allowed inside the jail"
+	}
+	return ""
 }
 
 // containerHostConfig - The HostConfig fields that can escape the jail.
 type containerHostConfig struct {
+	VolumesFrom []string          `json:"VolumesFrom"`
+	Links       []string          `json:"Links"`
 	Binds       []string          `json:"Binds"`
 	Mounts      []containerMount  `json:"Mounts"`
 	Privileged  bool              `json:"Privileged"`
@@ -291,6 +327,13 @@ func containerReason(body []byte, rootReal string) string {
 	if err := json.Unmarshal(body, &b); err != nil {
 		return "unparsable container-create body"
 	}
+	if nc := b.NetworkingConfig; nc != nil {
+		for name := range nc.EndpointsConfig {
+			if !defaultNetworks[name] {
+				return "joining network " + name + " is not allowed inside the jail"
+			}
+		}
+	}
 	h := b.HostConfig
 	if h == nil {
 		return ""
@@ -304,6 +347,9 @@ func containerReason(body []byte, rootReal string) string {
 		}
 	}
 	for _, m := range h.Mounts {
+		if strings.EqualFold(m.Type, "volume") && (m.Source != "" || m.VolumeOptions != nil) {
+			return "named volumes and volume driver options are not allowed; use a project bind mount"
+		}
 		if strings.EqualFold(m.Type, "bind") && !pathWithin(m.Source, rootReal) {
 			return "bind mount of host path outside the project dir: " + m.Source
 		}
@@ -325,6 +371,12 @@ func containerReason(body []byte, rootReal string) string {
 // strips a confinement layer, else why it does. Split out because these need no
 // host path to be an escape: the daemon grants them outright.
 func hostConfigReason(h *containerHostConfig) string {
+	if len(h.VolumesFrom) > 0 {
+		return "--volumes-from is not allowed inside the jail"
+	}
+	if len(h.Links) > 0 {
+		return "--link is not allowed inside the jail"
+	}
 	if h.Privileged {
 		return "--privileged is not allowed inside the jail"
 	}
@@ -358,6 +410,9 @@ func hostConfigReason(h *containerHostConfig) string {
 		if escapesNamespace(ns.mode) {
 			return "--" + ns.flag + "=" + ns.mode + " is not allowed"
 		}
+	}
+	if !defaultNetworks[h.NetworkMode] {
+		return "--network=" + h.NetworkMode + " is not allowed inside the jail"
 	}
 	return ""
 }
@@ -397,7 +452,7 @@ func bindReason(bind, rootReal string) string {
 		return "" // anonymous volume, no host source
 	}
 	if !strings.HasPrefix(src, "/") {
-		return "" // named volume
+		return "named volumes are not allowed inside the jail"
 	}
 	if !pathWithin(src, rootReal) {
 		return "bind mount of host path outside the project dir: " + src

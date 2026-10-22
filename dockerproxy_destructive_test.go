@@ -40,7 +40,20 @@ func newFakeDaemon(t *testing.T, projectDir string) *fakeDaemon {
 		d.reached = append(d.reached, r.Method+" "+r.URL.Path)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{}`))
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/containers/create"):
+			w.Write([]byte(`{"Id":"abc123"}`))
+		case strings.HasSuffix(r.URL.Path, "/exec"):
+			w.Write([]byte(`{"Id":"exec123"}`))
+		case strings.HasSuffix(r.URL.Path, "/containers/json"):
+			w.Write([]byte(`[{"Id":"abc123"},{"Id":"external"}]`))
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/containers/abc"):
+			w.Write([]byte(`{"Id":"abc123"}`)) // inspect resolving a short ID
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/containers/"):
+			w.Write([]byte(`{"Id":"external"}`))
+		default:
+			w.Write([]byte(`{}`))
+		}
 	})}
 	go srv.Serve(ln)
 
@@ -176,6 +189,9 @@ func TestDockerFilter_DestructiveCallsAreRefused(t *testing.T) {
 // …but everyday cleanup must still work, or people turn the filter off.
 func TestDockerFilter_OrdinaryCleanupStillWorks(t *testing.T) {
 	d := newFakeDaemon(t, t.TempDir())
+	if got := d.do(t, "POST", "/v1.45/containers/create", `{}`); got != 200 {
+		t.Fatal(got)
+	}
 
 	for _, c := range []struct{ method, path string }{
 		{"DELETE", "/v1.45/containers/abc123?force=1&v=1"},
@@ -185,6 +201,45 @@ func TestDockerFilter_OrdinaryCleanupStillWorks(t *testing.T) {
 		if got := d.do(t, c.method, c.path, ""); got != http.StatusOK {
 			t.Errorf("%s %s: status %d, want 200", c.method, c.path, got)
 		}
+	}
+}
+
+func TestDockerFilter_Ownership(t *testing.T) {
+	d := newFakeDaemon(t, t.TempDir())
+	for _, path := range []string{
+		"/containers/external/json", "/containers/external/exec", "/exec/external/start",
+		"/volumes", "/networks/create", "/commit?container=external",
+	} {
+		if got := d.do(t, "POST", "/v1.45"+path, `{}`); got != 403 {
+			t.Errorf("%s: got %d", path, got)
+		}
+	}
+	for _, got := range d.reached {
+		if got != "GET /containers/external/json" { // the proxy's own unversioned lookup
+			t.Fatalf("unowned operation reached daemon: %s", got)
+		}
+	}
+	d.reached = nil
+	if got := d.do(t, "POST", "/containers/create?name=owned", `{}`); got != 200 {
+		t.Fatal(got)
+	}
+	for _, path := range []string{"/containers/owned/start", "/containers/abc123/exec", "/exec/exec123/start"} {
+		if got := d.do(t, "POST", path, `{}`); got != 200 {
+			t.Errorf("%s: got %d", path, got)
+		}
+	}
+	if got := d.reached[1]; got != "POST /containers/abc123/start" {
+		t.Fatalf("name not pinned to ID: %s", got)
+	}
+	d.reached = nil
+	if got := d.do(t, "POST", "/containers/abc/stop", `{}`); got != 200 {
+		t.Fatalf("short ID of an owned container: got %d", got)
+	}
+	if got := d.reached[len(d.reached)-1]; got != "POST /containers/abc123/stop" {
+		t.Fatalf("short ID not pinned to full ID: %s", got)
+	}
+	if got := d.do(t, "POST", "/containers/abc123/exec", `{"Privileged":true}`); got != 403 {
+		t.Fatalf("privileged exec: got %d", got)
 	}
 }
 

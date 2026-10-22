@@ -9,9 +9,9 @@ go 1.26.0
 // them are reachable from this code — govulncheck reaches them through the
 // container-filter proxy, and this is a network-facing sandbox with three
 // listeners of its own, so the stdlib pin is part of the guarantee rather than
-// housekeeping. 1.26.8 is the current patch, so the pin tracks the line rather
+// housekeeping. 1.26.10 is the current patch, so the pin tracks the line rather
 // than the single release that closed any one of them. # VERSION-BUMP
-toolchain go1.26.8
+toolchain go1.26.10
 
 require (
 	github.com/landlock-lsm/go-landlock v0.10.1

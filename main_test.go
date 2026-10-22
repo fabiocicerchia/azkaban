@@ -80,11 +80,11 @@ func TestFilterReasonContainer(t *testing.T) {
 		{"bind inside cwd", `{"HostConfig":{"Binds":["` + inside + `:/app"]}}`, false},
 		{"bind root", `{"HostConfig":{"Binds":["/:/host"]}}`, true},
 		{"bind etc", `{"HostConfig":{"Binds":["/etc:/etc:ro"]}}`, true},
-		{"named volume", `{"HostConfig":{"Binds":["myvol:/data"]}}`, false},
+		{"named volume", `{"HostConfig":{"Binds":["myvol:/data"]}}`, true},
 		{"anonymous volume", `{"HostConfig":{"Binds":["/data"]}}`, false},
 		{"mount bind outside", `{"HostConfig":{"Mounts":[{"Type":"bind","Source":"/root"}]}}`, true},
 		{"mount bind inside", `{"HostConfig":{"Mounts":[{"Type":"bind","Source":"` + inside + `"}]}}`, false},
-		{"mount volume type", `{"HostConfig":{"Mounts":[{"Type":"volume","Source":"vol"}]}}`, false},
+		{"mount volume type", `{"HostConfig":{"Mounts":[{"Type":"volume","Source":"vol"}]}}`, true},
 		// Bind-in-disguise: a local-driver volume mounted inline at container
 		// create, with a device opt pointing outside cwd. Must be denied even
 		// though its Type is "volume", not "bind" (regression for the filter gap).
@@ -92,9 +92,15 @@ func TestFilterReasonContainer(t *testing.T) {
 			`"VolumeOptions":{"DriverConfig":{"Name":"local","Options":{"type":"none","o":"bind","device":"/etc"}}}}]}}`, true},
 		{"mount volume device inside", `{"HostConfig":{"Mounts":[{"Type":"volume",` +
 			`"VolumeOptions":{"DriverConfig":{"Name":"local","Options":{"type":"none","o":"bind",` +
-			`"device":"` + inside + `"}}}}]}}`, false},
+			`"device":"` + inside + `"}}}}]}}`, true},
 		{"mount volume no device", `{"HostConfig":{"Mounts":[{"Type":"volume",` +
-			`"VolumeOptions":{"DriverConfig":{"Name":"local","Options":{"foo":"bar"}}}}]}}`, false},
+			`"VolumeOptions":{"DriverConfig":{"Name":"local","Options":{"foo":"bar"}}}}]}}`, true},
+		{"volumes from", `{"HostConfig":{"VolumesFrom":["existing"]}}`, true},
+		{"link", `{"HostConfig":{"Links":["existing:alias"]}}`, true},
+		{"net named", `{"HostConfig":{"NetworkMode":"prod_default"}}`, true},
+		{"net none", `{"HostConfig":{"NetworkMode":"none"}}`, false},
+		{"endpoint named", `{"NetworkingConfig":{"EndpointsConfig":{"prod_default":{}}}}`, true},
+		{"endpoint bridge", `{"NetworkingConfig":{"EndpointsConfig":{"bridge":{}}}}`, false},
 		{"privileged", `{"HostConfig":{"Privileged":true}}`, true},
 		{"device", `{"HostConfig":{"Devices":[{"PathOnHost":"/dev/sda"}]}}`, true},
 		{"cap sys_admin", `{"HostConfig":{"CapAdd":["SYS_ADMIN"]}}`, true},

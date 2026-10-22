@@ -985,9 +985,8 @@ func finishRollback(s *rollbackSession) {
 //      endpoints and rejects host binds outside cwd, --privileged, --device,
 //      --cap-add, host net/pid/ipc/userns. --unfiltered-container-socket restores the unfiltered
 //      socket, where `docker run -v /:/h` reaches any host path as your user.
-//      The proxy is NOT an authorization boundary for the rest of the API: the
-//      jail can still start, exec into and DELETE your pre-existing containers,
-//      images and volumes. containerd/nerdctl are not offered at all (gRPC).
+//      Container and exec operations are restricted to resources created through
+//      this proxy. Images/build caches remain shared. containerd/nerdctl are not offered (gRPC).
 //   2. rw ~/.claude (+hooks) -> plant code that runs on the host on the next
 //      non-jailed invocation. Mitigated by the default tmp-overlay (writes are
 //      discarded), but --persist re-opens it. ~/.config/azkaban and
