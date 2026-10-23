@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.4](https://github.com/fabiocicerchia/azkaban/compare/v1.3.3...v1.3.4) (2026-10-23)
+
+
+### Bug Fixes
+
+* restrict Docker access to jail-owned resources ([#96](https://github.com/fabiocicerchia/azkaban/issues/96)) ([d47d65c](https://github.com/fabiocicerchia/azkaban/commit/d47d65c5ebf1430046872b9c69a3b43cd40ada97))
+
 ## [1.3.3](https://github.com/fabiocicerchia/azkaban/compare/v1.3.2...v1.3.3) (2026-09-20)
 
 
