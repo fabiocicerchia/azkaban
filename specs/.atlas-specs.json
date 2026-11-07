@@ -1,0 +1,3050 @@
+{
+ "excluded": {
+  "azkaban/audit": [
+   {
+    "candidate": "A nil recorder makes every record call a no-op",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "audit.go#auditor.event"
+   },
+   {
+    "candidate": "Concurrent writers (docker proxy goroutines) serialise through a mutex",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "audit.go#auditor"
+   },
+   {
+    "candidate": "A failing write warns once rather than per event",
+    "covered_by": "",
+    "reason": "TRIVIAL",
+    "source": "audit.go#auditor.event"
+   },
+   {
+    "candidate": "Close failure warns that the record may be incomplete",
+    "covered_by": "",
+    "reason": "TRIVIAL",
+    "source": "audit.go#auditor.close"
+   },
+   {
+    "candidate": "Records written by other modules (docker, egress, credential, ssh_agent, rollback, policy events)",
+    "covered_by": "owned by the modules that emit them",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "main.go#main"
+   },
+   {
+    "candidate": "Binary facts sections B1-B3 (libraries, imports, embedded URLs) printed unscored",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "audit.sh#binary_facts"
+   },
+   {
+    "candidate": "Informational directory sections 0-9 and unscored privilege-escalation section",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "audit.sh"
+   },
+   {
+    "candidate": "Optional third-party scanners run only when installed",
+    "covered_by": "tooling.threat-sweep.directory-verdict-from-high-signal-patterns",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "audit.sh#scan"
+   },
+   {
+    "candidate": "Excluded directories and prose/lock files",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "audit.sh"
+   },
+   {
+    "candidate": "make audit target invoking audit.sh",
+    "covered_by": "",
+    "reason": "TECH_BUILD",
+    "source": "Makefile"
+   },
+   {
+    "candidate": "Tail-window capping for uutils tail",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "audit.sh#binary_tamper_signals"
+   },
+   {
+    "candidate": "Anything that leaves the jail weaker than asked for is both shown and recorded",
+    "covered_by": "",
+    "reason": "UNVERIFIABLE",
+    "source": "audit.go#auditor.degraded"
+   }
+  ],
+  "azkaban/azkaban": [
+   {
+    "candidate": "Patched /etc/hosts, /etc/resolv.conf and jail hostname",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "main.go#outer"
+   },
+   {
+    "candidate": "SSH config drop-ins re-served as user-owned copies so git push over ssh works",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "main.go#outer"
+   },
+   {
+    "candidate": "Landlock allowlists tighter than the mounts (/dev, /run not writable)",
+    "covered_by": "enforced in the landlock stage (landlock.go), not read here",
+    "reason": "UNVERIFIABLE",
+    "source": "main.go#outer"
+   },
+   {
+    "candidate": "Sensitive /sys subtrees masked with tmpfs",
+    "covered_by": "",
+    "reason": "TRIVIAL",
+    "source": "main.go#outer"
+   },
+   {
+    "candidate": "GPU devices bound and granted write access",
+    "covered_by": "default/opt-out decided in flags.go",
+    "reason": "UNVERIFIABLE",
+    "source": "main.go#outer"
+   },
+   {
+    "candidate": "rlimits applied before start; cgroup memory cap with --mem-max",
+    "covered_by": "applyRlimits/setupCgroup defined outside main.go",
+    "reason": "UNVERIFIABLE",
+    "source": "main.go#outer"
+   },
+   {
+    "candidate": "TIOCSTI warning on legacy kernels",
+    "covered_by": "warnTIOCSTI in helpers.go",
+    "reason": "UNVERIFIABLE",
+    "source": "main.go#outer"
+   },
+   {
+    "candidate": "Elevation supervisor startup and 'no supervisor for this run' degrade",
+    "covered_by": "elevate.go",
+    "reason": "UNVERIFIABLE",
+    "source": "main.go#outer"
+   },
+   {
+    "candidate": "Run record events (start, policy, mode, ssh_agent, elevation_summary, rollback)",
+    "covered_by": "record format owned by audit.go",
+    "reason": "UNVERIFIABLE",
+    "source": "main.go#outer"
+   },
+   {
+    "candidate": "Temp files cleaned on every exit path",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "main.go#outer"
+   },
+   {
+    "candidate": "Rollback closing-snapshot or save failure messages",
+    "covered_by": "",
+    "reason": "TRIVIAL",
+    "source": "main.go#finishRollback"
+   },
+   {
+    "candidate": "Container create-request filtering rules (privileged, binds outside cwd, etc.)",
+    "covered_by": "dockerproxy.go filterReason",
+    "reason": "UNVERIFIABLE",
+    "source": "main_test.go#TestFilterReasonContainer"
+   },
+   {
+    "candidate": "Docker API root parsing",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "main_test.go#TestAPIRoot"
+   },
+   {
+    "candidate": "Config file line parsing",
+    "covered_by": "config parsing in cgroups.go/config.go",
+    "reason": "UNVERIFIABLE",
+    "source": "main_test.go#TestParseUserBinds"
+   },
+   {
+    "candidate": "Newline in a bound path refused",
+    "covered_by": "llJoin in cgroups.go",
+    "reason": "UNVERIFIABLE",
+    "source": "main.go#outer"
+   },
+   {
+    "candidate": "bwrap options passed on fd 3 to avoid the argument length limit",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "main.go#outer"
+   }
+  ],
+  "azkaban/cgroups": [
+   {
+    "candidate": "Temp files created on the host are removed on exit and on Ctrl-C/SIGTERM/SIGHUP, re-raising the signal",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "cgroups.go#cleanupOnSignal"
+   },
+   {
+    "candidate": "The jail's cgroup directory is removed on exit through the temp cleanup",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "cgroups.go#tempTrack"
+   },
+   {
+    "candidate": "Temp file creation failure is fatal",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "cgroups.go#tempWithMode"
+   },
+   {
+    "candidate": "One shared empty file is used to mask every masked file path",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "cgroups.go#maskFileOnce"
+   },
+   {
+    "candidate": "--dry-run output is shell-quoted so it can be pasted",
+    "covered_by": "owned by the dry-run module, which states the copy-pasteable contract",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "cgroups.go#shquote"
+   },
+   {
+    "candidate": "Detecting whether bubblewrap supports --tmp-overlay",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "cgroups.go#bwrapHas"
+   },
+   {
+    "candidate": "Single-file disposable writes via a temp copy",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "cgroups.go#tempCopy"
+   },
+   {
+    "candidate": "In-jail guidance lists only home entries that exist on the host",
+    "covered_by": "owned by the in-jail guidance module",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "cgroups.go#presentUnder"
+   },
+   {
+    "candidate": "Inner stage reads newline-separated allowlists from the environment",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "cgroups.go#splitEnv"
+   },
+   {
+    "candidate": "Dangling symlinks are not offered as bind sources",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "cgroups.go#exists"
+   },
+   {
+    "candidate": "Relative config entries resolve against $HOME",
+    "covered_by": "",
+    "reason": "TRIVIAL",
+    "source": "cgroups.go#resolve"
+   },
+   {
+    "candidate": "Repeatable string flags accumulate",
+    "covered_by": "",
+    "reason": "TRIVIAL",
+    "source": "cgroups.go#stringList"
+   },
+   {
+    "candidate": "Per-keyword parsing of net, credential, unix-socket, unix-socket-dir, mask, env lines",
+    "covered_by": "config.file.unknown-lines-ignored",
+    "reason": "TRIVIAL",
+    "source": "cgroups.go#parseUserBinds"
+   },
+   {
+    "candidate": "Fatal errors write an exit line to the run record before exiting",
+    "covered_by": "owned by the run-record module",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "cgroups.go#fatal"
+   },
+   {
+    "candidate": "Jail cgroup is a sibling, entered with clone3 before the child can fork",
+    "covered_by": "resources.memory.cap-enforced",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "cgroups.go#setupCgroup"
+   }
+  ],
+  "azkaban/config": [
+   {
+    "candidate": "main dispatches the inner Landlock stage, the why and rollback subcommands, otherwise the outer stage",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "config.go#main"
+   },
+   {
+    "candidate": "Jail hostname is 'azkaban'",
+    "covered_by": "",
+    "reason": "TRIVIAL",
+    "source": "config.go#jailHostname"
+   },
+   {
+    "candidate": "containerSockets candidate order for docker/podman; containerd not offered",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "config.go#containerSockets"
+   },
+   {
+    "candidate": "/sys firmware, fuse, debug and security subtrees masked",
+    "covered_by": "",
+    "reason": "UNVERIFIABLE",
+    "source": "config.go#sysMask"
+   },
+   {
+    "candidate": "AZKABAN_LL_* channel names shared by both stages",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "config.go#llEnvPrefix"
+   },
+   {
+    "candidate": "bwrap invoked by absolute path /usr/bin/bwrap",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "config.go#bwrapBin"
+   },
+   {
+    "candidate": "self binary re-bound at /tmp/.azkaban-self",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "config.go#selfInJail"
+   },
+   {
+    "candidate": "containers config dir frozen read-only so hooks_dir cannot be planted",
+    "covered_by": "jail.policy.trusted-config-frozen",
+    "reason": "DUPLICATE_OF",
+    "source": "config.go#roFreeze"
+   }
+  ],
+  "azkaban/credentialbroker": [
+   {
+    "candidate": "GH_TOKEN is preferred over GITHUB_TOKEN when both are set",
+    "covered_by": "",
+    "reason": "TRIVIAL",
+    "source": "credentialbroker.go#providers"
+   },
+   {
+    "candidate": "Broker listens on 127.0.0.1 on a random port, and that port is exempted from net-port filtering",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "credentialbroker.go#startCredentialBroker"
+   },
+   {
+    "candidate": "Responses are streamed and flushed chunk by chunk for git's pack protocol",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "credentialbroker.go#flushWriter"
+   },
+   {
+    "candidate": "Hop-by-hop headers (Connection, TE, Upgrade, \u2026) are stripped both ways",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "credentialbroker.go#hopByHop"
+   },
+   {
+    "candidate": "Session token accepted from either Authorization or Proxy-Authorization",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "credentialbroker.go#basicHeader"
+   },
+   {
+    "candidate": "Header read and idle timeouts on the broker server",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "credentialbroker.go#startCredentialBroker"
+   },
+   {
+    "candidate": "Only one provider (github) is offered",
+    "covered_by": "credential.broker.refuses-to-start-misconfigured",
+    "reason": "DUPLICATE_OF",
+    "source": "credentialbroker.go#providers"
+   },
+   {
+    "candidate": "Whitespace around the directive's fields is tolerated",
+    "covered_by": "",
+    "reason": "TRIVIAL",
+    "source": "credentialbroker.go#parseCredentialDirective"
+   },
+   {
+    "candidate": "A request without this run's session token is refused",
+    "covered_by": "",
+    "reason": "UNVERIFIABLE",
+    "source": "credentialbroker.go#credentialBroker.serve"
+   },
+   {
+    "candidate": "A request outside the route policy is refused, even with write access",
+    "covered_by": "",
+    "reason": "UNVERIFIABLE",
+    "source": "credentialbroker.go#credentialBroker.serve"
+   },
+   {
+    "candidate": "Push is refused by default and the refusal names the opt-in",
+    "covered_by": "",
+    "reason": "UNVERIFIABLE",
+    "source": "credentialbroker.go#credentialBroker.serve"
+   },
+   {
+    "candidate": "The real token is sent to GitHub and never reaches the jail",
+    "covered_by": "",
+    "reason": "UNVERIFIABLE",
+    "source": "credentialbroker.go#credentialBroker.serve"
+   },
+   {
+    "candidate": "git inside the jail reaches GitHub through the broker without a config file",
+    "covered_by": "",
+    "reason": "UNVERIFIABLE",
+    "source": "credentialbroker.go#credentialBroker.JailEnv"
+   },
+   {
+    "candidate": "Every brokered request decision is written to the run record",
+    "covered_by": "",
+    "reason": "UNVERIFIABLE",
+    "source": "credentialbroker.go#credentialBroker.serve"
+   }
+  ],
+  "azkaban/dockerownership": [
+   {
+    "candidate": "API version prefix (/v1.45/) is stripped for matching and kept when forwarding",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "dockerownership.go#dockerPath"
+   },
+   {
+    "candidate": "Short-ID/name lookup sends an inspect request for the unowned reference to the daemon",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "dockerownership.go#daemonInspect"
+   },
+   {
+    "candidate": "Container list is streamed, not buffered whole",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "dockerownership.go#filterList"
+   },
+   {
+    "candidate": "A create/exec response without an Id, unparseable, or over 4 MiB makes the proxy return an error, leaving the created resource unowned",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "dockerownership.go#record"
+   },
+   {
+    "candidate": "Creating containers and listing containers need no ownership",
+    "covered_by": "container.ownership.list-shows-only-own",
+    "reason": "DUPLICATE_OF",
+    "source": "dockerownership.go#authorize"
+   },
+   {
+    "candidate": "Bare /containers/ path with no resource is refused",
+    "covered_by": "",
+    "reason": "TRIVIAL",
+    "source": "dockerownership.go#authorize"
+   },
+   {
+    "candidate": "Commit rewrites the container query parameter to the owned full ID",
+    "covered_by": "container.ownership.references-pinned-to-created-id",
+    "reason": "DUPLICATE_OF",
+    "source": "dockerownership.go#authorize"
+   },
+   {
+    "candidate": "Privileged exec on an owned container is refused",
+    "covered_by": "container-access/socket-filtering (create-body filter)",
+    "reason": "DUPLICATE_OF",
+    "source": "dockerproxy.go#dockerFilterHandler"
+   }
+  ],
+  "azkaban/dockerproxy": [
+   {
+    "candidate": "Container and exec operations limited to containers this jail created; name/short-ID pinning; list filtering",
+    "covered_by": "container-access.container-ownership (module azkaban/dockerownership)",
+    "reason": "DUPLICATE_OF",
+    "source": "dockerproxy.go#dockerFilterHandler (ownership.authorize / ownership.record, implemented in dockerownership.go)"
+   },
+   {
+    "candidate": "--unfiltered-container-socket binds the raw socket and warns; rootful socket warning; --dry-run note about the raw socket bind source",
+    "covered_by": "main.go module (container-access/socket-filtering raw option)",
+    "reason": "DUPLICATE_OF",
+    "source": "main.go (caller of startDockerFilterProxy)"
+   },
+   {
+    "candidate": "Proxy listens on a fresh socket under /tmp/azkaban-dockerproxy-* bound into the jail",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "dockerproxy.go#startDockerFilterProxy"
+   },
+   {
+    "candidate": "Responses streamed without buffering (FlushInterval -1) so pulls, builds and logs flow",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "dockerproxy.go#startDockerFilterProxy"
+   },
+   {
+    "candidate": "Header-read and idle timeouts, no write timeout",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "dockerproxy.go#startDockerFilterProxy"
+   },
+   {
+    "candidate": "Version prefix /vX.Y stripped before the allowlist match",
+    "covered_by": "container-access.socket-filtering.unmodelled-api-areas-refused",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "dockerproxy.go#apiRoot"
+   },
+   {
+    "candidate": "Symlink resolution of not-yet-existing bind sources via the longest existing ancestor",
+    "covered_by": "container-access.socket-filtering.host-mounts-confined-to-project",
+    "reason": "DUPLICATE_OF",
+    "source": "dockerproxy.go#realPath"
+   },
+   {
+    "candidate": "Order of checks (destructive, allowlist, body, ownership) deciding which message wins",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "dockerproxy.go#dockerFilterHandler"
+   },
+   {
+    "candidate": "Per-capability, per-namespace and case-variant permutations (SYS_MODULE, SYS_PTRACE, ipc/userns host, apparmor:unconfined, lowercase caps)",
+    "covered_by": "container-access.socket-filtering.no-host-privilege",
+    "reason": "TRIVIAL",
+    "source": "dockerproxy.go#hostConfigReason"
+   },
+   {
+    "candidate": "Volume-create body filter allowing plain named volumes and refusing device opts outside the project",
+    "covered_by": "container-access.socket-filtering.no-named-volumes (unreachable: volumes is not an allowed root)",
+    "reason": "UNVERIFIABLE",
+    "source": "dockerproxy.go#volumeReason"
+   },
+   {
+    "candidate": "Bind-mount symlink race (TOCTOU) between filter check and daemon mount",
+    "covered_by": "container-access.socket-filtering.host-mounts-confined-to-project (noted in assessment)",
+    "reason": "UNVERIFIABLE",
+    "source": "dockerproxy.go#pathWithin"
+   }
+  ],
+  "azkaban/egressproxy": [
+   {
+    "candidate": "startEgressProxy refuses an empty allowlist",
+    "covered_by": "main.go only starts the proxy when the allowlist is non-empty, so no operator can reach this error",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "egressproxy.go#startEgressProxy"
+   },
+   {
+    "candidate": "Header read timeout 10s and idle timeout 2m on the proxy server",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "egressproxy.go#startEgressProxy"
+   },
+   {
+    "candidate": "Proxy-Authorization Basic parsing permutations (prefix, base64, missing colon)",
+    "covered_by": "network.egress-proxy.per-run-token-required",
+    "reason": "TRIVIAL",
+    "source": "egressproxy.go#parseProxyAuth"
+   },
+   {
+    "candidate": "Constant-time token comparison",
+    "covered_by": "network.egress-proxy.per-run-token-required",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "egressproxy.go#subtleEqual"
+   },
+   {
+    "candidate": "Token is 64 hex chars and differs every run",
+    "covered_by": "network.egress-proxy.per-run-token-required",
+    "reason": "DUPLICATE_OF",
+    "source": "egressproxy.go#proxyToken"
+   },
+   {
+    "candidate": "First resolved address is the one dialled",
+    "covered_by": "network.egress-proxy.tunnel-without-interception",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "egressproxy.go#egressProxy.tunnel"
+   },
+   {
+    "candidate": "Hijack failure returns 403 'cannot hijack the connection'",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "egressproxy.go#egressProxy.tunnel"
+   },
+   {
+    "candidate": "HTTP(S)_PROXY env, NO_PROXY and Landlock port narrowing to the proxy port",
+    "covered_by": "belongs to the main/flag wiring module, not egressproxy.go",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "main.go (net host wiring)"
+   },
+   {
+    "candidate": "Only the jail that started the proxy can use it",
+    "covered_by": "",
+    "reason": "UNVERIFIABLE",
+    "source": "egressproxy.go#egressProxy.authorized"
+   },
+   {
+    "candidate": "Plain HTTP through the egress proxy is refused",
+    "covered_by": "",
+    "reason": "UNVERIFIABLE",
+    "source": "egressproxy.go#egressProxy.serve"
+   },
+   {
+    "candidate": "An allowed HTTPS connection is passed through untouched",
+    "covered_by": "",
+    "reason": "UNVERIFIABLE",
+    "source": "egressproxy.go#egressProxy.tunnel"
+   },
+   {
+    "candidate": "Every refused connection is reported on the operator's terminal",
+    "covered_by": "",
+    "reason": "UNVERIFIABLE",
+    "source": "egressproxy.go#egressProxy.deny"
+   }
+  ],
+  "azkaban/elevate": [
+   {
+    "candidate": "BPF filter traps only openat/openat2 on the native architecture and ignores foreign-arch and x32 calls",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "elevate.go#elevationFilter"
+   },
+   {
+    "candidate": "Listener handed from inner to outer stage over SCM_RIGHTS on fd 4 via AZKABAN_ELEVATE_FD",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "elevate.go#sendListener"
+   },
+   {
+    "candidate": "Notification re-validated after reading target memory, to guard against pid reuse",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "elevate.go#notifStillValid"
+   },
+   {
+    "candidate": "Errno sent back negated in seccomp_notif_resp",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "elevate.go#respondError"
+   },
+   {
+    "candidate": "Supervisor kept alive until the jail exits so opens don't turn into ENOSYS",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "elevate.go#elevator.close"
+   },
+   {
+    "candidate": "A relative path opened against a real directory descriptor, or a path that can't be read, is left to Landlock without a prompt",
+    "covered_by": "",
+    "reason": "TRIVIAL",
+    "source": "elevate.go#elevator.resolve"
+   },
+   {
+    "candidate": "Prompt also shows 'asked for: <raw>' when the requested path differs from the resolved one",
+    "covered_by": "",
+    "reason": "TRIVIAL",
+    "source": "elevate.go#terminalApprover.approve"
+   },
+   {
+    "candidate": "openat2 open_how parsing and short-struct handling",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "elevate.go#readOpenHow"
+   },
+   {
+    "candidate": "No seccomp filter on GOARCH other than amd64/arm64 (inner stage is fatal)",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "elevate.go#installElevationFilter"
+   },
+   {
+    "candidate": "The operator's answer decides whether the jail may read a path outside the allowlist",
+    "covered_by": "",
+    "reason": "UNVERIFIABLE",
+    "source": "elevate.go#elevator.handle"
+   },
+   {
+    "candidate": "Paths the allowlist already covers are never prompted about",
+    "covered_by": "",
+    "reason": "UNVERIFIABLE",
+    "source": "elevate.go#elevator.underAllowlist"
+   },
+   {
+    "candidate": "Without a terminal to ask on, every elevation request is refused",
+    "covered_by": "",
+    "reason": "UNVERIFIABLE",
+    "source": "elevate.go#terminalApprover.approve"
+   },
+   {
+    "candidate": "A burst of elevation requests is refused rather than queued",
+    "covered_by": "",
+    "reason": "UNVERIFIABLE",
+    "source": "elevate.go#terminalApprover.take"
+   },
+   {
+    "candidate": "The operator is asked about a given path only once per run",
+    "covered_by": "",
+    "reason": "UNVERIFIABLE",
+    "source": "elevate.go#elevator.recall"
+   },
+   {
+    "candidate": "Every elevation decision and the run's totals are written to the run record",
+    "covered_by": "",
+    "reason": "UNVERIFIABLE",
+    "source": "elevate.go#elevator.stats"
+   }
+  ],
+  "azkaban/flags": [
+   {
+    "candidate": "bwrapArgs append-only option list whose order decides which bind wins",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "flags.go#bwrapArgs"
+   },
+   {
+    "candidate": "jailOpts inverts negative flags (--no-gpu, --no-landlock, --persist) into positive fields",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "flags.go#jailOpts"
+   },
+   {
+    "candidate": "Default-off/on of each capability (GPU, overlay, audit, guidance, container socket, network)",
+    "covered_by": "observable only in the modules that act on each option (throwaway-overlay, socket-filtering, network-modes, run-record, in-jail-guidance)",
+    "reason": "UNVERIFIABLE",
+    "source": "flags.go#parseFlags"
+   },
+   {
+    "candidate": "--rollback turns off the throwaway overlay",
+    "covered_by": "observable in the rollback / throwaway-overlay modules",
+    "reason": "UNVERIFIABLE",
+    "source": "flags.go#parseFlags"
+   },
+   {
+    "candidate": "Repeatable --ro/--rw/--persist-path/--net-host/--credential/--unix-socket collect every occurrence",
+    "covered_by": "",
+    "reason": "TRIVIAL",
+    "source": "flags.go#parseFlags"
+   },
+   {
+    "candidate": "persistAll recorded separately from overlay so the run record can say which flag disabled it",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "flags.go#jailOpts"
+   }
+  ],
+  "azkaban/guidance": [
+   {
+    "candidate": "Guidance lives under /run because it is a tmpfs nobody's project uses",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "guidance.go#guidanceDir"
+   },
+   {
+    "candidate": "policy.json falls back to \"{}\" if marshalling fails",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "guidance.go#jailPolicy.json"
+   },
+   {
+    "candidate": "The bound binary is resolved through symlinks and skipped if os.Executable fails",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "main.go#buildArgs"
+   },
+   {
+    "candidate": "Empty Read-only / Persisted / Masked sections are omitted from the README",
+    "covered_by": "",
+    "reason": "TRIVIAL",
+    "source": "guidance.go#guidanceText"
+   },
+   {
+    "candidate": "why --self inside a jail started with --no-guidance names --no-guidance in its error",
+    "covered_by": "transparency/policy-query (azkaban why --self)",
+    "reason": "DUPLICATE_OF",
+    "source": "why.go#loadSelfPolicy"
+   },
+   {
+    "candidate": "why --self outside a jail says this is not one",
+    "covered_by": "transparency/policy-query (azkaban why --self)",
+    "reason": "DUPLICATE_OF",
+    "source": "why.go#loadSelfPolicy"
+   },
+   {
+    "candidate": "Every jail carries a read-only description of itself by default",
+    "covered_by": "",
+    "reason": "UNVERIFIABLE",
+    "source": "main.go#buildArgs"
+   },
+   {
+    "candidate": "The operator can start a jail with no self-description",
+    "covered_by": "",
+    "reason": "UNVERIFIABLE",
+    "source": "main.go#buildArgs"
+   }
+  ],
+  "azkaban/helpers": [
+   {
+    "candidate": "Hosts and resolver copies are written to tracked temp files (tempWith) and removed on exit",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "helpers.go#writeHosts"
+   },
+   {
+    "candidate": "Core-dump cap of 0 exists to keep dumps from filling the overlay",
+    "covered_by": "jail.resources.rlimits-capped-by-default",
+    "reason": "DUPLICATE_OF",
+    "source": "helpers.go#applyRlimits"
+   },
+   {
+    "candidate": "Caps are set on the outer process so bwrap and all children inherit them, and they still hold under --no-landlock",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "helpers.go#applyRlimits"
+   },
+   {
+    "candidate": "Known limitation: RLIMIT_FSIZE is per file, so many small files can still fill the overlay",
+    "covered_by": "",
+    "reason": "UNVERIFIABLE",
+    "source": "helpers.go#applyRlimits"
+   },
+   {
+    "candidate": "Duplicate '// Helpers.' banner comment",
+    "covered_by": "",
+    "reason": "TRIVIAL",
+    "source": "helpers.go"
+   }
+  ],
+  "azkaban/landlock": [
+   {
+    "candidate": "Inner stage requires '--landlock-exec -- <cmd>' and exits 2 with usage otherwise",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "landlock.go#landlockStage"
+   },
+   {
+    "candidate": "Allowlist entries missing on disk are ignored (IgnoreIfMissing) rather than failing the run",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "landlock.go#landlockStage"
+   },
+   {
+    "candidate": "Allowlists read from newline-separated AZKABAN_LL_* variables, blank entries dropped",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "cgroups.go#splitEnv"
+   },
+   {
+    "candidate": "--elevate: seccomp listener installed before Landlock and handed to the supervisor; failure is fatal exit 1",
+    "covered_by": "owned by recovery-elevation/runtime-elevation (elevate.go)",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "landlock.go#landlockStage"
+   },
+   {
+    "candidate": "Landlock restriction failure exits 1 with 'azkaban: landlock: <err>'",
+    "covered_by": "",
+    "reason": "TRIVIAL",
+    "source": "landlock.go#landlockStage"
+   },
+   {
+    "candidate": "exec failure after lookup exits 126",
+    "covered_by": "",
+    "reason": "TRIVIAL",
+    "source": "landlock.go#landlockStage"
+   },
+   {
+    "candidate": "Restrictions inherited across exec by the target and its children",
+    "covered_by": "jail.landlock.writes-confined-to-writable-set",
+    "reason": "DUPLICATE_OF",
+    "source": "landlock.go#landlockStage"
+   }
+  ],
+  "azkaban/makefile": [
+   {
+    "candidate": "`make` with no target prints the grouped verb list from the `##` comments (help is the default goal)",
+    "covered_by": "",
+    "reason": "TECH_BUILD",
+    "source": "Makefile#help"
+   },
+   {
+    "candidate": "`make build` produces a stripped, static, CGO-free azkaban binary (CGO_ENABLED=0 exported for every target)",
+    "covered_by": "",
+    "reason": "TECH_BUILD",
+    "source": "Makefile#build"
+   },
+   {
+    "candidate": "`make version` prints `git describe --tags --always --dirty`, falling back to version.txt outside a git checkout",
+    "covered_by": "",
+    "reason": "TECH_BUILD",
+    "source": "Makefile#version"
+   },
+   {
+    "candidate": "`make install` with PREFIX installs the binary (0755) and man page (0644) under $(DESTDIR)$(PREFIX); without PREFIX it go-installs into GOBIN and the man page into $(USER_MANDIR). NOTE: USER_MANDIR is defined nowhere in the repo, so the no-PREFIX path runs `install -d \"\"` and fails before installing the man page; `install`/`uninstall` are also not .PHONY and use `## name:` lines the help awk never matches, so they are missing from `make help`",
+    "covered_by": "",
+    "reason": "TECH_BUILD",
+    "source": "Makefile#install"
+   },
+   {
+    "candidate": "`make uninstall` removes what install put down (same undefined USER_MANDIR on the no-PREFIX path)",
+    "covered_by": "",
+    "reason": "TECH_BUILD",
+    "source": "Makefile#uninstall"
+   },
+   {
+    "candidate": "`make deps` downloads and verifies module checksums",
+    "covered_by": "",
+    "reason": "TECH_BUILD",
+    "source": "Makefile#deps"
+   },
+   {
+    "candidate": "`make run ARGS=...` runs the jail via go run",
+    "covered_by": "",
+    "reason": "TECH_DEVTOOLING",
+    "source": "Makefile#run"
+   },
+   {
+    "candidate": "`make clean` removes the binary and coverage.out",
+    "covered_by": "",
+    "reason": "TECH_BUILD",
+    "source": "Makefile#clean"
+   },
+   {
+    "candidate": "`make setup` installs the pre-commit hook only if pre-commit is on PATH, silently succeeding otherwise",
+    "covered_by": "",
+    "reason": "TECH_DEVTOOLING",
+    "source": "Makefile#setup"
+   },
+   {
+    "candidate": "`make lint`, `fmt`, `format`, `tidy`, `analyze` run pre-commit, go fmt, gofmt -w, go mod tidy and golangci-lint",
+    "covered_by": "",
+    "reason": "TECH_BUILD",
+    "source": "Makefile#lint"
+   },
+   {
+    "candidate": "`make test`, `test-docker` (AZKABAN_DOCKER_IT=1) and `cover` run the suite uncached with -count=1; cover writes coverage.out and prints the total",
+    "covered_by": "",
+    "reason": "TECH_DEVTOOLING",
+    "source": "Makefile#test"
+   },
+   {
+    "candidate": "`make audit` runs ./audit.sh over the tree",
+    "covered_by": "",
+    "reason": "TECH_DEVTOOLING",
+    "source": "Makefile#audit"
+   }
+  ],
+  "azkaban/rollback": [
+   {
+    "candidate": "Identical content across files and runs is stored once",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "rollback.go#storeFile"
+   },
+   {
+    "candidate": "Stored objects are written to a temp file and renamed so a partial object is never filed under its hash",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "rollback.go#storeFile"
+   },
+   {
+    "candidate": "Rollback state lives under $XDG_STATE_HOME/azkaban/rollback, falling back to ~/.local/state",
+    "covered_by": "",
+    "reason": "TECH_PERSISTENCE",
+    "source": "rollback.go#rollbackDir"
+   },
+   {
+    "candidate": "Session JSON format and on-disk layout",
+    "covered_by": "",
+    "reason": "TECH_PERSISTENCE",
+    "source": "rollback.go#rollbackSession"
+   },
+   {
+    "candidate": "Missing or unknown rollback subcommand prints usage and exits 2; show/restore without an id exits 2",
+    "covered_by": "",
+    "reason": "TRIVIAL",
+    "source": "rollback.go#rollbackCommand"
+   },
+   {
+    "candidate": "Human-readable byte sizes in the cleanup summary",
+    "covered_by": "",
+    "reason": "TRIVIAL",
+    "source": "rollback.go#humanSize"
+   },
+   {
+    "candidate": "Closing-snapshot or save failure warns that the run is not reviewable",
+    "covered_by": "",
+    "reason": "TRIVIAL",
+    "source": "main.go#finishRollback"
+   },
+   {
+    "candidate": "Unreadable subtrees are recorded as skipped and the walk continues",
+    "covered_by": "rollback.snapshot.excludes-repos-build-output-and-links",
+    "reason": "DUPLICATE_OF",
+    "source": "rollback.go#takeSnapshot"
+   },
+   {
+    "candidate": "Two rollback runs starting in the same second share a session id and the later one overwrites the earlier",
+    "covered_by": "",
+    "reason": "TRIVIAL",
+    "source": "main.go#finishRollback"
+   }
+  ],
+  "azkaban/sshagentproxy": [
+   {
+    "candidate": "A message over 256 KiB drops the connection before anything is allocated",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "sshagentproxy.go#readAgentMessage"
+   },
+   {
+    "candidate": "The agent socket is removed when the run ends (close is idempotent)",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "sshagentproxy.go#sshAgentProxy.close"
+   },
+   {
+    "candidate": "An idle connection is dropped after 2 minutes; the upstream dial times out after 5 seconds",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "sshagentproxy.go#sshAgentProxy.handle"
+   },
+   {
+    "candidate": "When the real agent is unreachable, the connection closes with no reply, even for requests that would be refused",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "sshagentproxy.go#sshAgentProxy.handle"
+   },
+   {
+    "candidate": "A leftover socket from a killed run is replaced at startup",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "sshagentproxy.go#newSSHAgentProxy"
+   },
+   {
+    "candidate": "The key label copes with malformed or lying length prefixes",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "sshagentproxy.go#fingerprintish"
+   },
+   {
+    "candidate": "Length-prefixed framing round-trips",
+    "covered_by": "",
+    "reason": "TECH_DEVTOOLING",
+    "source": "sshagentproxy.go#writeAgentMessage"
+   },
+   {
+    "candidate": "Zero-length messages are skipped silently",
+    "covered_by": "",
+    "reason": "TRIVIAL",
+    "source": "sshagentproxy.go#sshAgentProxy.handle"
+   },
+   {
+    "candidate": "The jail can list keys and ask for signatures",
+    "covered_by": "",
+    "reason": "UNVERIFIABLE",
+    "source": "sshagentproxy.go#sshAgentProxy.classify"
+   },
+   {
+    "candidate": "The jail cannot add, remove or lock the operator's keys",
+    "covered_by": "",
+    "reason": "UNVERIFIABLE",
+    "source": "sshagentproxy.go#sshAgentProxy.classify"
+   },
+   {
+    "candidate": "With confirmation on, each signature waits for the operator's yes",
+    "covered_by": "",
+    "reason": "UNVERIFIABLE",
+    "source": "sshagentproxy.go#sshAgentProxy.ask"
+   },
+   {
+    "candidate": "The run record counts the jail's agent use",
+    "covered_by": "",
+    "reason": "UNVERIFIABLE",
+    "source": "sshagentproxy.go#sshAgentProxy.stats"
+   }
+  ],
+  "azkaban/usage": [
+   {
+    "candidate": "Unknown or malformed flag exits with status 2",
+    "covered_by": "command-line/flags-usage parsing rules (flags.go module)",
+    "reason": "DUPLICATE_OF",
+    "source": "flags.go#parseFlags"
+   },
+   {
+    "candidate": "Help text descriptions of each feature's behaviour (overlay, proxies, broker, guidance, audit log)",
+    "covered_by": "the owning feature modules (throwaway-overlay, ssh-agent-forwarding, credential-broker, run-record, in-jail-guidance, etc.)",
+    "reason": "DUPLICATE_OF",
+    "source": "usage.go#usage"
+   },
+   {
+    "candidate": "Flag package's auto-generated usage is suppressed (output discarded)",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "flags.go#parseFlags"
+   },
+   {
+    "candidate": "Exact column layout and wording of the help text",
+    "covered_by": "",
+    "reason": "TRIVIAL",
+    "source": "usage.go#usage"
+   }
+  ],
+  "azkaban/why": [
+   {
+    "candidate": "Refusing a query with no --path, --host or --port, or an --op other than read/write (exit 2)",
+    "covered_by": "",
+    "reason": "TRIVIAL",
+    "source": "why.go#whyCommand"
+   },
+   {
+    "candidate": "--json output prints the verdicts as an indented JSON array",
+    "covered_by": "",
+    "reason": "TRIVIAL",
+    "source": "why.go#whyCommand"
+   },
+   {
+    "candidate": "Exit 2 when $HOME or the working directory cannot be determined",
+    "covered_by": "",
+    "reason": "TRIVIAL",
+    "source": "why.go#whyCommand"
+   },
+   {
+    "candidate": "A literal leading ~ in --path is expanded the same as the shell would",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "why.go#abs"
+   },
+   {
+    "candidate": "Human-readable layout of a verdict (query, decision, mechanism, matched, survives, detail)",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "why.go#printVerdict"
+   },
+   {
+    "candidate": "A covered path that does not exist on the host and is not writable is reported absent",
+    "covered_by": "transparency.why.credential-stores-masked",
+    "reason": "DUPLICATE_OF",
+    "source": "why.go#decide"
+   },
+   {
+    "candidate": "--self tells the agent that chmod and sudo will not help with a read-only path",
+    "covered_by": "transparency.why.overlay-writes-do-not-survive",
+    "reason": "DUPLICATE_OF",
+    "source": "why.go#decideSelf"
+   },
+   {
+    "candidate": "Entry matching covers the entry and its children, not siblings or parents",
+    "covered_by": "",
+    "reason": "INTERNAL_MECHANISM",
+    "source": "why.go#covers"
+   },
+   {
+    "candidate": "Jail policy round-trips through its JSON file; guidance README and dry-run guidance binds (tests in why_test.go)",
+    "covered_by": "in-jail guidance module",
+    "reason": "DUPLICATE_OF",
+    "source": "guidance.go#jailPolicy"
+   }
+  ]
+ },
+ "lifted": {
+  "azkaban/audit": [],
+  "azkaban/azkaban": [
+   {
+    "from_source": "cgroups.go#bindSafe",
+    "rule": "A writable grant that would re-expose the home directory or / is refused (azkaban.confinement.writable-bind-cannot-reexpose-home)"
+   },
+   {
+    "from_source": "cgroups.go#mentionedInConfig",
+    "rule": "Naming a masked credential store in the operator's grants makes it readable (azkaban.masking.naming-a-path-unmasks-it)"
+   }
+  ],
+  "azkaban/cgroups": [],
+  "azkaban/config": [
+   {
+    "from_source": "config.go#roFreeze",
+    "rule": "Nothing in the jail may write the trusted azkaban config, even under --persist"
+   },
+   {
+    "from_source": "config.go#envKeep",
+    "rule": "Only an allowlist of host environment variables reaches the jailed tool"
+   },
+   {
+    "from_source": "config.go#maskPaths",
+    "rule": "Known credential stores inside allowlisted directories are blanked unless the operator names them in the user config"
+   },
+   {
+    "from_source": "config.go#rwPaths",
+    "rule": "Home entries not on the allowlist are absent from the jail"
+   }
+  ],
+  "azkaban/credentialbroker": [],
+  "azkaban/dockerownership": [
+   {
+    "from_source": "dockerproxy.go#startDockerFilterProxy",
+    "rule": "Ownership lasts for a single run: what the jail created is held in proxy memory only, so a new run owns nothing from earlier runs"
+   }
+  ],
+  "azkaban/dockerproxy": [],
+  "azkaban/egressproxy": [],
+  "azkaban/elevate": [
+   {
+    "from_source": "elevate.go#elevator.stats",
+    "rule": "elevation.audit.decisions-recorded"
+   },
+   {
+    "from_source": "elevate.go#terminalApprover.take",
+    "rule": "elevation.prompt.rate-limited"
+   }
+  ],
+  "azkaban/flags": [],
+  "azkaban/guidance": [
+   {
+    "from_source": "cgroups.go#presentUnder",
+    "rule": "transparency.guidance.lists-only-what-was-granted"
+   }
+  ],
+  "azkaban/helpers": [],
+  "azkaban/landlock": [],
+  "azkaban/makefile": [],
+  "azkaban/rollback": [
+   {
+    "from_source": "rollback.go#restore",
+    "rule": "Restore never writes content whose hash does not match what was snapshotted"
+   },
+   {
+    "from_source": "rollback.go#rollbackCleanup",
+    "rule": "Cleanup never drops stored content a kept session still refers to"
+   }
+  ],
+  "azkaban/sshagentproxy": [],
+  "azkaban/usage": [],
+  "azkaban/why": [
+   {
+    "from_source": "why.go#topLayer",
+    "rule": "Nothing in the jail may write what configures the jail: the azkaban config directory stays read-only under a writable ~/.config"
+   },
+   {
+    "from_source": "cgroups.go#mentionedInConfig",
+    "rule": "Naming a masked credential store in the trusted config is the only way to unmask it"
+   }
+  ]
+ },
+ "retired": [],
+ "scenarios": {
+  "command-line.flags-usage.001": {
+   "file": "specs/command-line/flags-usage/jail-flags.feature",
+   "fingerprint": "2e041f83079f",
+   "human": false,
+   "rule": "cli.flags.unfiltered-socket-requires-runtime",
+   "source": "flags.go#parseFlags",
+   "status": "inferred",
+   "test": "",
+   "tests": []
+  },
+  "command-line.flags-usage.002": {
+   "file": "specs/command-line/flags-usage/jail-flags.feature",
+   "fingerprint": "2e041f83079f",
+   "human": false,
+   "rule": "cli.flags.elevate-requires-landlock",
+   "source": "flags.go#parseFlags",
+   "status": "inferred",
+   "test": "",
+   "tests": []
+  },
+  "command-line.flags-usage.003": {
+   "file": "specs/command-line/flags-usage/jail-flags.feature",
+   "fingerprint": "2e041f83079f",
+   "human": false,
+   "rule": "cli.flags.ssh-agent-modifiers-consistent",
+   "source": "flags.go#parseFlags",
+   "status": "inferred",
+   "test": "",
+   "tests": []
+  },
+  "command-line.flags-usage.004": {
+   "file": "specs/command-line/flags-usage/jail-flags.feature",
+   "fingerprint": "2e041f83079f",
+   "human": false,
+   "rule": "cli.flags.rollback-excludes-persist",
+   "source": "flags.go#parseFlags",
+   "status": "inferred",
+   "test": "",
+   "tests": []
+  },
+  "command-line.flags-usage.005": {
+   "file": "specs/command-line/flags-usage/jail-flags.feature",
+   "fingerprint": "2e041f83079f",
+   "human": false,
+   "rule": "cli.flags.both-runtimes-picks-podman",
+   "source": "flags.go#parseFlags",
+   "status": "inferred",
+   "test": "",
+   "tests": []
+  },
+  "command-line.flags-usage.006": {
+   "file": "specs/command-line/flags-usage/jail-flags.feature",
+   "fingerprint": "2e041f83079f",
+   "human": false,
+   "rule": "cli.flags.command-and-default-shell",
+   "source": "flags.go#parseFlags",
+   "status": "inferred",
+   "test": "",
+   "tests": []
+  },
+  "command-line.flags-usage.007": {
+   "file": "specs/command-line/flags-usage/jail-flags.feature",
+   "fingerprint": "2e041f83079f",
+   "human": false,
+   "rule": "cli.flags.help-and-unknown-flags",
+   "source": "flags.go#parseFlags",
+   "status": "inferred",
+   "test": "",
+   "tests": []
+  },
+  "command-line.flags-usage.008": {
+   "file": "specs/command-line/flags-usage/flag-reference.feature",
+   "fingerprint": "2e041f83079f",
+   "human": false,
+   "rule": "cli.help.prints-reference-without-jailing",
+   "source": "flags.go#parseFlags",
+   "status": "inferred",
+   "test": "",
+   "tests": []
+  },
+  "command-line.flags-usage.009": {
+   "file": "specs/command-line/flags-usage/flag-reference.feature",
+   "fingerprint": "8c89bfcda844",
+   "human": false,
+   "rule": "cli.help.states-cost-of-risky-flags",
+   "source": "usage.go#usage",
+   "status": "inferred",
+   "test": "",
+   "tests": []
+  },
+  "command-line.user-config.001": {
+   "file": "specs/command-line/user-config/user-config-parsing.feature",
+   "fingerprint": "15c435b2fe89",
+   "human": false,
+   "rule": "config.file.unknown-lines-ignored",
+   "source": "cgroups.go#parseUserBinds",
+   "status": "verified",
+   "test": "main_test.go#TestParseUserBinds",
+   "tests": [
+    "main_test.go#TestParseUserBinds"
+   ]
+  },
+  "command-line.user-config.002": {
+   "file": "specs/command-line/user-config/user-config-parsing.feature",
+   "fingerprint": "15c435b2fe89",
+   "human": false,
+   "rule": "config.audit.only-exact-off-disables-record",
+   "source": "cgroups.go#parseUserBinds",
+   "status": "verified",
+   "test": "audit_test.go#TestConfigCanTurnTheRecordOffAndATypoCannot",
+   "tests": [
+    "audit_test.go#TestConfigCanTurnTheRecordOffAndATypoCannot"
+   ]
+  },
+  "command-line.user-config.003": {
+   "file": "specs/command-line/user-config/user-config-parsing.feature",
+   "fingerprint": "bc91d0237bec",
+   "human": false,
+   "rule": "config.mask.named-path-unmasked",
+   "source": "cgroups.go#mentionedInConfig",
+   "status": "verified",
+   "test": "main_test.go#TestMentionedInConfigCoversPersist",
+   "tests": [
+    "main_test.go#TestMentionedInConfigCoversPersist"
+   ]
+  },
+  "container-access.container-ownership.001": {
+   "file": "specs/container-access/container-ownership/container-ownership.feature",
+   "fingerprint": "9651cede132b",
+   "human": false,
+   "rule": "container.ownership.foreign-resources-refused",
+   "source": "dockerownership.go#authorize",
+   "status": "verified",
+   "test": "dockerproxy_destructive_test.go#TestDockerFilter_Ownership",
+   "tests": [
+    "dockerproxy_destructive_test.go#TestDockerFilter_Ownership"
+   ]
+  },
+  "container-access.container-ownership.002": {
+   "file": "specs/container-access/container-ownership/container-ownership.feature",
+   "fingerprint": "1aa852fa68d6",
+   "human": false,
+   "rule": "container.ownership.references-pinned-to-created-id",
+   "source": "dockerownership.go#resolve",
+   "status": "verified",
+   "test": "dockerproxy_destructive_test.go#TestDockerFilter_Ownership",
+   "tests": [
+    "dockerproxy_destructive_test.go#TestDockerFilter_Ownership"
+   ]
+  },
+  "container-access.container-ownership.003": {
+   "file": "specs/container-access/container-ownership/container-ownership.feature",
+   "fingerprint": "9651cede132b",
+   "human": false,
+   "rule": "container.ownership.own-exec-sessions-usable",
+   "source": "dockerownership.go#authorize",
+   "status": "verified",
+   "test": "dockerproxy_destructive_test.go#TestDockerFilter_Ownership",
+   "tests": [
+    "dockerproxy_destructive_test.go#TestDockerFilter_Ownership"
+   ]
+  },
+  "container-access.container-ownership.004": {
+   "file": "specs/container-access/container-ownership/container-ownership.feature",
+   "fingerprint": "d7541d61c112",
+   "human": false,
+   "rule": "container.ownership.list-shows-only-own",
+   "source": "dockerownership.go#filterList",
+   "status": "verified",
+   "test": "dockerownership_test.go#TestDockerOwnershipListIsFiltered",
+   "tests": [
+    "dockerownership_test.go#TestDockerOwnershipListIsFiltered"
+   ]
+  },
+  "container-access.container-ownership.005": {
+   "file": "specs/container-access/container-ownership/container-ownership.feature",
+   "fingerprint": "9651cede132b",
+   "human": false,
+   "rule": "container.ownership.unmodelled-operations-refused",
+   "source": "dockerownership.go#authorize",
+   "status": "inferred",
+   "test": "",
+   "tests": []
+  },
+  "container-access.container-ownership.006": {
+   "file": "specs/container-access/container-ownership/container-ownership.feature",
+   "fingerprint": "644ae34ae32e",
+   "human": false,
+   "rule": "container.ownership.scoped-to-one-run",
+   "source": "dockerproxy.go#startDockerFilterProxy",
+   "status": "inferred",
+   "test": "",
+   "tests": []
+  },
+  "container-access.socket-filtering.001": {
+   "file": "specs/container-access/socket-filtering/container-socket-opt-in.feature",
+   "fingerprint": "32fe8a58b3da",
+   "human": false,
+   "rule": "azkaban.containers.no-socket-by-default",
+   "source": "main.go#outer",
+   "status": "verified",
+   "test": "sandbox_test.go#TestRuntime_NoSocketIsBoundByDefault",
+   "tests": [
+    "sandbox_test.go#TestRuntime_NoSocketIsBoundByDefault"
+   ]
+  },
+  "container-access.socket-filtering.002": {
+   "file": "specs/container-access/socket-filtering/container-socket-opt-in.feature",
+   "fingerprint": "32fe8a58b3da",
+   "human": false,
+   "rule": "azkaban.containers.socket-behind-filter",
+   "source": "main.go#outer",
+   "status": "verified",
+   "test": "sandbox_test.go#TestRuntime_OptInBindsTheSocket",
+   "tests": [
+    "sandbox_test.go#TestRuntime_OptInBindsTheSocket"
+   ]
+  },
+  "container-access.socket-filtering.003": {
+   "file": "specs/container-access/socket-filtering/container-socket-opt-in.feature",
+   "fingerprint": "32fe8a58b3da",
+   "human": false,
+   "rule": "azkaban.containers.missing-runtime-refused",
+   "source": "main.go#outer",
+   "status": "verified",
+   "test": "sandbox_test.go#TestRuntime_MissingSocketIsAnError",
+   "tests": [
+    "sandbox_test.go#TestRuntime_MissingSocketIsAnError"
+   ]
+  },
+  "container-access.socket-filtering.004": {
+   "file": "specs/container-access/socket-filtering/container-socket-opt-in.feature",
+   "fingerprint": "32fe8a58b3da",
+   "human": false,
+   "rule": "azkaban.containers.risky-socket-warned",
+   "source": "main.go#outer",
+   "status": "inferred",
+   "test": "",
+   "tests": []
+  },
+  "container-access.socket-filtering.005": {
+   "file": "specs/container-access/socket-filtering/container-socket-filtering.feature",
+   "fingerprint": "a20f8ff65ced",
+   "human": false,
+   "rule": "container-access.socket-filtering.unmodelled-api-areas-refused",
+   "source": "dockerproxy.go#dockerFilterHandler",
+   "status": "verified",
+   "test": "dockerproxy_destructive_test.go#TestDockerFilter_UnmodelledEndpointsAreRefused",
+   "tests": [
+    "dockerproxy_destructive_test.go#TestDockerFilter_UnmodelledEndpointsAreRefused",
+    "dockerproxy_destructive_test.go#TestDockerFilter_LibpodAPIIsRefused",
+    "dockerproxy_destructive_test.go#TestDockerFilter_Ownership"
+   ]
+  },
+  "container-access.socket-filtering.006": {
+   "file": "specs/container-access/socket-filtering/container-socket-filtering.feature",
+   "fingerprint": "a20f8ff65ced",
+   "human": false,
+   "rule": "container-access.socket-filtering.everyday-work-passes",
+   "source": "dockerproxy.go#dockerFilterHandler",
+   "status": "verified",
+   "test": "dockerproxy_destructive_test.go#TestDockerFilter_EverydayEndpointsStillWork",
+   "tests": [
+    "dockerproxy_destructive_test.go#TestDockerFilter_EverydayEndpointsStillWork",
+    "dockerproxy_destructive_test.go#TestDockerFilter_OrdinaryCleanupStillWorks",
+    "dockerproxy_integration_test.go#TestDockerProxyIntegration"
+   ]
+  },
+  "container-access.socket-filtering.007": {
+   "file": "specs/container-access/socket-filtering/container-socket-filtering.feature",
+   "fingerprint": "1c0e414f1040",
+   "human": false,
+   "rule": "container-access.socket-filtering.unrecoverable-deletion-refused",
+   "source": "dockerproxy.go#destructiveReason",
+   "status": "verified",
+   "test": "dockerproxy_destructive_test.go#TestDockerFilter_DestructiveCallsAreRefused",
+   "tests": [
+    "dockerproxy_destructive_test.go#TestDockerFilter_DestructiveCallsAreRefused"
+   ]
+  },
+  "container-access.socket-filtering.008": {
+   "file": "specs/container-access/socket-filtering/container-socket-filtering.feature",
+   "fingerprint": "d904388f2d4a",
+   "human": false,
+   "rule": "container-access.socket-filtering.host-mounts-confined-to-project",
+   "source": "dockerproxy.go#containerReason",
+   "status": "verified",
+   "test": "main_test.go#TestFilterReasonContainer",
+   "tests": [
+    "main_test.go#TestFilterReasonContainer",
+    "main_test.go#TestFilterReasonVolumeAndSymlink",
+    "dockerproxy_destructive_test.go#TestDockerFilter_DenialIsAWellFormedDockerError",
+    "dockerproxy_integration_test.go#TestDockerProxyIntegration"
+   ]
+  },
+  "container-access.socket-filtering.009": {
+   "file": "specs/container-access/socket-filtering/container-socket-filtering.feature",
+   "fingerprint": "d904388f2d4a",
+   "human": false,
+   "rule": "container-access.socket-filtering.no-named-volumes",
+   "source": "dockerproxy.go#containerReason",
+   "status": "verified",
+   "test": "main_test.go#TestFilterReasonContainer",
+   "tests": [
+    "main_test.go#TestFilterReasonContainer",
+    "dockerproxy_destructive_test.go#TestDockerFilter_Ownership"
+   ]
+  },
+  "container-access.socket-filtering.010": {
+   "file": "specs/container-access/socket-filtering/container-socket-filtering.feature",
+   "fingerprint": "9a90e135c1de",
+   "human": false,
+   "rule": "container-access.socket-filtering.no-host-privilege",
+   "source": "dockerproxy.go#hostConfigReason",
+   "status": "verified",
+   "test": "main_test.go#TestFilterReasonContainer",
+   "tests": [
+    "main_test.go#TestFilterReasonContainer",
+    "dockerproxy_destructive_test.go#TestDockerFilter_Ownership"
+   ]
+  },
+  "container-access.socket-filtering.011": {
+   "file": "specs/container-access/socket-filtering/container-socket-filtering.feature",
+   "fingerprint": "a20f8ff65ced",
+   "human": false,
+   "rule": "container-access.socket-filtering.unreadable-create-refused",
+   "source": "dockerproxy.go#dockerFilterHandler",
+   "status": "verified",
+   "test": "main_test.go#TestFilterReasonContainer",
+   "tests": [
+    "main_test.go#TestFilterReasonContainer",
+    "dockerproxy_destructive_test.go#TestDockerFilter_CreateBodyIsSizeCapped"
+   ]
+  },
+  "container-access.socket-filtering.012": {
+   "file": "specs/container-access/socket-filtering/container-socket-filtering.feature",
+   "fingerprint": "1d456021f165",
+   "human": false,
+   "rule": "container-access.socket-filtering.denial-explained",
+   "source": "dockerproxy.go#denyJSON",
+   "status": "verified",
+   "test": "dockerproxy_destructive_test.go#TestDockerFilter_DenialIsAWellFormedDockerError",
+   "tests": [
+    "dockerproxy_destructive_test.go#TestDockerFilter_DenialIsAWellFormedDockerError",
+    "dockerproxy_integration_test.go#TestDockerProxyIntegration"
+   ]
+  },
+  "credential-delegation.credential-broker.001": {
+   "file": "specs/credential-delegation/credential-broker/brokered-credentials-setup.feature",
+   "fingerprint": "32fe8a58b3da",
+   "human": false,
+   "rule": "azkaban.credentials.broker-announced",
+   "source": "main.go#outer",
+   "status": "inferred",
+   "test": "",
+   "tests": []
+  },
+  "credential-delegation.credential-broker.002": {
+   "file": "specs/credential-delegation/credential-broker/brokered-credentials-setup.feature",
+   "fingerprint": "32fe8a58b3da",
+   "human": false,
+   "rule": "azkaban.credentials.broker-reachable-under-port-limits",
+   "source": "main.go#outer",
+   "status": "inferred",
+   "test": "",
+   "tests": []
+  },
+  "credential-delegation.credential-broker.003": {
+   "file": "specs/credential-delegation/credential-broker/brokered-credentials-setup.feature",
+   "fingerprint": "32fe8a58b3da",
+   "human": false,
+   "rule": "azkaban.credentials.malformed-directive-refused",
+   "source": "main.go#outer",
+   "status": "inferred",
+   "test": "",
+   "tests": []
+  },
+  "credential-delegation.credential-broker.004": {
+   "file": "specs/credential-delegation/credential-broker/credential-broker.feature",
+   "fingerprint": "15dfe304742a",
+   "human": false,
+   "rule": "credential.broker.push-allowed-with-write",
+   "source": "credentialbroker.go#startCredentialBroker",
+   "status": "verified",
+   "test": "credentialbroker_test.go#TestBrokerAllowsPushWhenAskedFor",
+   "tests": [
+    "credentialbroker_test.go#TestBrokerAllowsPushWhenAskedFor"
+   ]
+  },
+  "credential-delegation.credential-broker.005": {
+   "file": "specs/credential-delegation/credential-broker/credential-broker.feature",
+   "fingerprint": "15dfe304742a",
+   "human": false,
+   "rule": "credential.broker.refuses-to-start-misconfigured",
+   "source": "credentialbroker.go#startCredentialBroker",
+   "status": "verified",
+   "test": "credentialbroker_test.go#TestBrokerRefusesToStartWithNoCredentialOnTheHost",
+   "tests": [
+    "credentialbroker_test.go#TestBrokerRefusesToStartWithNoCredentialOnTheHost",
+    "credentialbroker_test.go#TestBrokerRejectsAnUnknownProvider",
+    "credentialbroker_test.go#TestCredentialDirectiveParsing"
+   ]
+  },
+  "credential-delegation.ssh-agent-forwarding.001": {
+   "file": "specs/credential-delegation/ssh-agent-forwarding/ssh-agent-opt-in.feature",
+   "fingerprint": "32fe8a58b3da",
+   "human": false,
+   "rule": "azkaban.ssh-agent.not-forwarded-by-default",
+   "source": "main.go#outer",
+   "status": "verified",
+   "test": "sandbox_test.go#TestSSHAgent_NotForwardedByDefault",
+   "tests": [
+    "sandbox_test.go#TestSSHAgent_NotForwardedByDefault"
+   ]
+  },
+  "credential-delegation.ssh-agent-forwarding.002": {
+   "file": "specs/credential-delegation/ssh-agent-forwarding/ssh-agent-opt-in.feature",
+   "fingerprint": "32fe8a58b3da",
+   "human": false,
+   "rule": "azkaban.ssh-agent.opt-in-forwards-agent-not-keys",
+   "source": "main.go#outer",
+   "status": "verified",
+   "test": "sandbox_test.go#TestSSHAgent_OptInBindsSocketAndKnownHosts",
+   "tests": [
+    "sandbox_test.go#TestSSHAgent_OptInBindsSocketAndKnownHosts"
+   ]
+  },
+  "credential-delegation.ssh-agent-forwarding.003": {
+   "file": "specs/credential-delegation/ssh-agent-forwarding/ssh-agent-opt-in.feature",
+   "fingerprint": "32fe8a58b3da",
+   "human": false,
+   "rule": "azkaban.ssh-agent.missing-agent-refused",
+   "source": "main.go#outer",
+   "status": "verified",
+   "test": "sandbox_test.go#TestSSHAgent_MissingAgentIsAnError",
+   "tests": [
+    "sandbox_test.go#TestSSHAgent_MissingAgentIsAnError"
+   ]
+  },
+  "credential-delegation.ssh-agent-forwarding.004": {
+   "file": "specs/credential-delegation/ssh-agent-forwarding/ssh-agent-filtering.feature",
+   "fingerprint": "30d95403ec0c",
+   "human": false,
+   "rule": "credentials.ssh-agent.confirm-requires-terminal",
+   "source": "sshagentproxy.go#newSSHAgentProxy",
+   "status": "inferred",
+   "test": "",
+   "tests": []
+  },
+  "credential-delegation.ssh-agent-forwarding.005": {
+   "file": "specs/credential-delegation/ssh-agent-forwarding/ssh-agent-filtering.feature",
+   "fingerprint": "30d95403ec0c",
+   "human": false,
+   "rule": "credentials.ssh-agent.socket-owner-only",
+   "source": "sshagentproxy.go#newSSHAgentProxy",
+   "status": "verified",
+   "test": "sshagentproxy_test.go#TestTheJailFacingSocketIsNotReadableByOtherUsers",
+   "tests": [
+    "sshagentproxy_test.go#TestTheJailFacingSocketIsNotReadableByOtherUsers"
+   ]
+  },
+  "developer-tooling.threat-sweep.001": {
+   "file": "specs/developer-tooling/threat-sweep/threat-sweep.feature",
+   "fingerprint": "0372c75646d3",
+   "human": false,
+   "rule": "tooling.threat-sweep.binary-verdict-follows-tamper-signals",
+   "source": "audit.sh#audit_binary",
+   "status": "verified",
+   "test": "audit_test.go#TestAuditBinary_VerdictFollowsTamperSignals",
+   "tests": [
+    "audit_test.go#TestAuditBinary_VerdictFollowsTamperSignals",
+    "audit_test.go#TestAuditBinary_AppendedPayloadIsFlagged"
+   ]
+  },
+  "developer-tooling.threat-sweep.002": {
+   "file": "specs/developer-tooling/threat-sweep/threat-sweep.feature",
+   "fingerprint": "f83e54f59c53",
+   "human": false,
+   "rule": "tooling.threat-sweep.directory-verdict-from-high-signal-patterns",
+   "source": "audit.sh#flag",
+   "status": "inferred",
+   "test": "",
+   "tests": []
+  },
+  "developer-tooling.threat-sweep.003": {
+   "file": "specs/developer-tooling/threat-sweep/threat-sweep.feature",
+   "fingerprint": "4551e1791301",
+   "human": false,
+   "rule": "tooling.threat-sweep.remote-repo-swept-without-running-its-code",
+   "source": "audit.sh",
+   "status": "inferred",
+   "test": "",
+   "tests": []
+  },
+  "developer-tooling.threat-sweep.004": {
+   "file": "specs/developer-tooling/threat-sweep/threat-sweep.feature",
+   "fingerprint": "4551e1791301",
+   "human": false,
+   "rule": "tooling.threat-sweep.bad-target-refused",
+   "source": "audit.sh",
+   "status": "inferred",
+   "test": "",
+   "tests": []
+  },
+  "filesystem-confinement.device-display-passthrough.001": {
+   "file": "specs/filesystem-confinement/device-display-passthrough/named-socket-and-display-grants.feature",
+   "fingerprint": "32fe8a58b3da",
+   "human": false,
+   "rule": "azkaban.sockets.missing-socket-grant-refused",
+   "source": "main.go#outer",
+   "status": "inferred",
+   "test": "",
+   "tests": []
+  },
+  "filesystem-confinement.device-display-passthrough.002": {
+   "file": "specs/filesystem-confinement/device-display-passthrough/named-socket-and-display-grants.feature",
+   "fingerprint": "32fe8a58b3da",
+   "human": false,
+   "rule": "azkaban.display.only-display-sockets-shared",
+   "source": "main.go#outer",
+   "status": "verified",
+   "test": "sandbox_test.go#TestDisplay_BindsNamedSocketsNotTheWholeRuntimeDir",
+   "tests": [
+    "sandbox_test.go#TestDisplay_BindsNamedSocketsNotTheWholeRuntimeDir"
+   ]
+  },
+  "filesystem-confinement.device-display-passthrough.003": {
+   "file": "specs/filesystem-confinement/device-display-passthrough/display-sockets.feature",
+   "fingerprint": "b661d30a4681",
+   "human": false,
+   "rule": "jail.display.named-sockets-only",
+   "source": "config.go#displaySockets",
+   "status": "verified",
+   "test": "sandbox_test.go#TestDisplay_BindsNamedSocketsNotTheWholeRuntimeDir",
+   "tests": [
+    "sandbox_test.go#TestDisplay_BindsNamedSocketsNotTheWholeRuntimeDir"
+   ]
+  },
+  "filesystem-confinement.home-allowlists.001": {
+   "file": "specs/filesystem-confinement/home-allowlists/confine-to-project.feature",
+   "fingerprint": "32fe8a58b3da",
+   "human": false,
+   "rule": "azkaban.confinement.refuse-cwd-containing-home",
+   "source": "main.go#outer",
+   "status": "verified",
+   "test": "sandbox_test.go#TestRefusal_CwdContainingHome",
+   "tests": [
+    "sandbox_test.go#TestRefusal_CwdContainingHome"
+   ]
+  },
+  "filesystem-confinement.home-allowlists.002": {
+   "file": "specs/filesystem-confinement/home-allowlists/confine-to-project.feature",
+   "fingerprint": "32fe8a58b3da",
+   "human": false,
+   "rule": "azkaban.confinement.home-hidden-except-allowlist",
+   "source": "main.go#outer",
+   "status": "verified",
+   "test": "sandbox_test.go#TestVisibility_SecretsAreHidden",
+   "tests": [
+    "sandbox_test.go#TestVisibility_SecretsAreHidden",
+    "sandbox_test.go#TestVisibility_AllowlistedPathsArePresent",
+    "sandbox_test.go#TestDestruction_HiddenDataSurvivesRecursiveDelete"
+   ]
+  },
+  "filesystem-confinement.home-allowlists.003": {
+   "file": "specs/filesystem-confinement/home-allowlists/confine-to-project.feature",
+   "fingerprint": "32fe8a58b3da",
+   "human": false,
+   "rule": "azkaban.confinement.project-dir-really-writable",
+   "source": "main.go#outer",
+   "status": "verified",
+   "test": "sandbox_test.go#TestOverlay_ProjectDirIsReallyWritable",
+   "tests": [
+    "sandbox_test.go#TestOverlay_ProjectDirIsReallyWritable"
+   ]
+  },
+  "filesystem-confinement.home-allowlists.004": {
+   "file": "specs/filesystem-confinement/home-allowlists/confine-to-project.feature",
+   "fingerprint": "32fe8a58b3da",
+   "human": false,
+   "rule": "azkaban.confinement.writable-bind-cannot-reexpose-home",
+   "source": "main.go#outer",
+   "status": "verified",
+   "test": "sandbox_test.go#TestConfig_RefusesBindsThatWouldUndoTheJail",
+   "tests": [
+    "sandbox_test.go#TestConfig_RefusesBindsThatWouldUndoTheJail",
+    "sandbox_test.go#TestExtraBinds_PerRunFlags",
+    "main_test.go#TestBindSafe"
+   ]
+  },
+  "filesystem-confinement.home-allowlists.005": {
+   "file": "specs/filesystem-confinement/home-allowlists/confine-to-project.feature",
+   "fingerprint": "32fe8a58b3da",
+   "human": false,
+   "rule": "azkaban.confinement.extra-read-only-path",
+   "source": "main.go#outer",
+   "status": "verified",
+   "test": "sandbox_test.go#TestExtraBinds_PerRunFlags",
+   "tests": [
+    "sandbox_test.go#TestExtraBinds_PerRunFlags"
+   ]
+  },
+  "filesystem-confinement.home-allowlists.006": {
+   "file": "specs/filesystem-confinement/home-allowlists/confine-to-project.feature",
+   "fingerprint": "32fe8a58b3da",
+   "human": false,
+   "rule": "azkaban.confinement.read-only-grant-of-home-not-refused",
+   "source": "main.go#outer",
+   "status": "inferred",
+   "test": "",
+   "tests": []
+  },
+  "filesystem-confinement.home-allowlists.007": {
+   "file": "specs/filesystem-confinement/home-allowlists/unsafe-bind-refusal.feature",
+   "fingerprint": "83104913a8ae",
+   "human": false,
+   "rule": "binds.writable.no-home-or-root",
+   "source": "cgroups.go#bindSafe",
+   "status": "verified",
+   "test": "main_test.go#TestBindSafe",
+   "tests": [
+    "main_test.go#TestBindSafe"
+   ]
+  },
+  "filesystem-confinement.home-allowlists.008": {
+   "file": "specs/filesystem-confinement/home-allowlists/unsafe-bind-refusal.feature",
+   "fingerprint": "fce671e12fd8",
+   "human": false,
+   "rule": "binds.landlock.no-newline-in-path",
+   "source": "cgroups.go#llJoin",
+   "status": "inferred",
+   "test": "",
+   "tests": []
+  },
+  "filesystem-confinement.home-allowlists.009": {
+   "file": "specs/filesystem-confinement/home-allowlists/home-allowlist.feature",
+   "fingerprint": "feb331928f75",
+   "human": false,
+   "rule": "jail.home.unlisted-entries-absent",
+   "source": "config.go#rwPaths",
+   "status": "verified",
+   "test": "sandbox_test.go#TestVisibility_SecretsAreHidden",
+   "tests": [
+    "sandbox_test.go#TestVisibility_SecretsAreHidden",
+    "sandbox_test.go#TestVisibility_SecretsUnreadableViaSymlink",
+    "why_test.go#TestWhyDefaultDenyIsAbsentNotDenied"
+   ]
+  },
+  "filesystem-confinement.home-allowlists.010": {
+   "file": "specs/filesystem-confinement/home-allowlists/home-allowlist.feature",
+   "fingerprint": "feb331928f75",
+   "human": false,
+   "rule": "jail.home.allowlisted-entries-present",
+   "source": "config.go#rwPaths",
+   "status": "verified",
+   "test": "sandbox_test.go#TestVisibility_AllowlistedPathsArePresent",
+   "tests": [
+    "sandbox_test.go#TestVisibility_AllowlistedPathsArePresent"
+   ]
+  },
+  "filesystem-confinement.home-allowlists.011": {
+   "file": "specs/filesystem-confinement/home-allowlists/home-allowlist.feature",
+   "fingerprint": "feb331928f75",
+   "human": false,
+   "rule": "jail.home.hidden-data-survives-deletion",
+   "source": "config.go#rwPaths",
+   "status": "verified",
+   "test": "sandbox_test.go#TestDestruction_HiddenDataSurvivesRecursiveDelete",
+   "tests": [
+    "sandbox_test.go#TestDestruction_HiddenDataSurvivesRecursiveDelete"
+   ]
+  },
+  "filesystem-confinement.kernel-access-rules.001": {
+   "file": "specs/filesystem-confinement/kernel-access-rules/kernel-access-rules.feature",
+   "fingerprint": "412b51ba6ae8",
+   "human": false,
+   "rule": "jail.landlock.writes-confined-to-writable-set",
+   "source": "landlock.go#landlockStage",
+   "status": "verified",
+   "test": "sandbox_test.go#TestWrite_OnlyIntendedPathsAreWritable",
+   "tests": [
+    "sandbox_test.go#TestWrite_OnlyIntendedPathsAreWritable",
+    "sandbox_test.go#TestWrite_LandlockIsTighterThanMounts"
+   ]
+  },
+  "filesystem-confinement.kernel-access-rules.002": {
+   "file": "specs/filesystem-confinement/kernel-access-rules/kernel-access-rules.feature",
+   "fingerprint": "412b51ba6ae8",
+   "human": false,
+   "rule": "jail.landlock.cross-directory-moves-stay-inside-writable-set",
+   "source": "landlock.go#landlockStage",
+   "status": "verified",
+   "test": "sandbox_test.go#TestWrite_CrossDirectoryLinkAndRename",
+   "tests": [
+    "sandbox_test.go#TestWrite_CrossDirectoryLinkAndRename"
+   ]
+  },
+  "filesystem-confinement.kernel-access-rules.003": {
+   "file": "specs/filesystem-confinement/kernel-access-rules/kernel-access-rules.feature",
+   "fingerprint": "412b51ba6ae8",
+   "human": false,
+   "rule": "jail.landlock.pseudo-terminals-usable",
+   "source": "landlock.go#landlockStage",
+   "status": "verified",
+   "test": "sandbox_test.go#TestRegression_PtyAllocationWorksUnderLandlock",
+   "tests": [
+    "sandbox_test.go#TestRegression_PtyAllocationWorksUnderLandlock"
+   ]
+  },
+  "filesystem-confinement.kernel-access-rules.004": {
+   "file": "specs/filesystem-confinement/kernel-access-rules/kernel-access-rules.feature",
+   "fingerprint": "412b51ba6ae8",
+   "human": false,
+   "rule": "jail.landlock.outbound-tcp-limited-to-listed-ports",
+   "source": "landlock.go#landlockStage",
+   "status": "verified",
+   "test": "sandbox_test.go#TestNetPorts_RestrictOutboundTCP",
+   "tests": [
+    "sandbox_test.go#TestNetPorts_RestrictOutboundTCP"
+   ]
+  },
+  "filesystem-confinement.kernel-access-rules.005": {
+   "file": "specs/filesystem-confinement/kernel-access-rules/kernel-access-rules.feature",
+   "fingerprint": "412b51ba6ae8",
+   "human": false,
+   "rule": "jail.landlock.start-up-refusals",
+   "source": "landlock.go#landlockStage",
+   "status": "inferred",
+   "test": "",
+   "tests": []
+  },
+  "filesystem-confinement.kernel-access-rules.006": {
+   "file": "specs/filesystem-confinement/kernel-access-rules/kernel-access-rules.feature",
+   "fingerprint": "412b51ba6ae8",
+   "human": false,
+   "rule": "jail.landlock.policy-channel-hidden-from-tool",
+   "source": "landlock.go#landlockStage",
+   "status": "verified",
+   "test": "sandbox_test.go#TestEnv_InternalLandlockChannelIsStripped",
+   "tests": [
+    "sandbox_test.go#TestEnv_InternalLandlockChannelIsStripped"
+   ]
+  },
+  "filesystem-confinement.kernel-access-rules.007": {
+   "file": "specs/filesystem-confinement/kernel-access-rules/kernel-access-rules.feature",
+   "fingerprint": "412b51ba6ae8",
+   "human": false,
+   "rule": "jail.landlock.degrades-on-older-kernels",
+   "source": "landlock.go#landlockStage",
+   "status": "inferred",
+   "test": "",
+   "tests": []
+  },
+  "filesystem-confinement.secret-masking.001": {
+   "file": "specs/filesystem-confinement/secret-masking/protecting-secrets-and-policy.feature",
+   "fingerprint": "32fe8a58b3da",
+   "human": false,
+   "rule": "azkaban.masking.jail-config-frozen",
+   "source": "main.go#outer",
+   "status": "verified",
+   "test": "sandbox_test.go#TestConfig_JailCannotRewriteItsOwnBindList",
+   "tests": [
+    "sandbox_test.go#TestConfig_JailCannotRewriteItsOwnBindList",
+    "sandbox_test.go#TestPersist_TrustedConfigIsStillFrozen",
+    "sandbox_test.go#TestWrite_OnlyIntendedPathsAreWritable"
+   ]
+  },
+  "filesystem-confinement.secret-masking.002": {
+   "file": "specs/filesystem-confinement/secret-masking/protecting-secrets-and-policy.feature",
+   "fingerprint": "32fe8a58b3da",
+   "human": false,
+   "rule": "azkaban.masking.credential-stores-hidden",
+   "source": "main.go#outer",
+   "status": "verified",
+   "test": "sandbox_test.go#TestMask_CredentialsInsideAllowlistedDirsAreHidden",
+   "tests": [
+    "sandbox_test.go#TestMask_CredentialsInsideAllowlistedDirsAreHidden",
+    "sandbox_test.go#TestMask_UserConfigCanAddPaths"
+   ]
+  },
+  "filesystem-confinement.secret-masking.003": {
+   "file": "specs/filesystem-confinement/secret-masking/protecting-secrets-and-policy.feature",
+   "fingerprint": "32fe8a58b3da",
+   "human": false,
+   "rule": "azkaban.masking.naming-a-path-unmasks-it",
+   "source": "main.go#outer",
+   "status": "verified",
+   "test": "sandbox_test.go#TestMask_UserConfigCanOptOut",
+   "tests": [
+    "sandbox_test.go#TestMask_UserConfigCanOptOut",
+    "sandbox_test.go#TestPersistPath_UnmasksCredentialStore",
+    "main_test.go#TestMentionedInConfigCoversPersist"
+   ]
+  },
+  "filesystem-confinement.secret-masking.004": {
+   "file": "specs/filesystem-confinement/secret-masking/secret-masking.feature",
+   "fingerprint": "4cf8b5a7c862",
+   "human": false,
+   "rule": "jail.policy.trusted-config-frozen",
+   "source": "config.go#roFreeze",
+   "status": "verified",
+   "test": "sandbox_test.go#TestConfig_JailCannotRewriteItsOwnBindList",
+   "tests": [
+    "sandbox_test.go#TestConfig_JailCannotRewriteItsOwnBindList",
+    "sandbox_test.go#TestPersist_TrustedConfigIsStillFrozen",
+    "why_test.go#TestWhyRoFreezeBeatsAWritableParent"
+   ]
+  },
+  "filesystem-confinement.secret-masking.005": {
+   "file": "specs/filesystem-confinement/secret-masking/secret-masking.feature",
+   "fingerprint": "a30d6713b7c9",
+   "human": false,
+   "rule": "jail.secrets.credential-stores-masked",
+   "source": "config.go#maskPaths",
+   "status": "verified",
+   "test": "sandbox_test.go#TestMask_CredentialsInsideAllowlistedDirsAreHidden",
+   "tests": [
+    "sandbox_test.go#TestMask_CredentialsInsideAllowlistedDirsAreHidden",
+    "why_test.go#TestWhyMaskBeatsTheWritableParent"
+   ]
+  },
+  "filesystem-confinement.secret-masking.006": {
+   "file": "specs/filesystem-confinement/secret-masking/secret-masking.feature",
+   "fingerprint": "a30d6713b7c9",
+   "human": false,
+   "rule": "jail.secrets.mask-opt-out-via-config",
+   "source": "config.go#maskPaths",
+   "status": "verified",
+   "test": "sandbox_test.go#TestMask_UserConfigCanOptOut",
+   "tests": [
+    "sandbox_test.go#TestMask_UserConfigCanOptOut",
+    "why_test.go#TestWhyConfigUnmasksACredentialStore"
+   ]
+  },
+  "filesystem-confinement.throwaway-overlay.001": {
+   "file": "specs/filesystem-confinement/throwaway-overlay/throwaway-home-writes.feature",
+   "fingerprint": "32fe8a58b3da",
+   "human": false,
+   "rule": "azkaban.overlay.home-writes-discarded-by-default",
+   "source": "main.go#outer",
+   "status": "verified",
+   "test": "sandbox_test.go#TestOverlay_DestructionIsDiscardedByDefault",
+   "tests": [
+    "sandbox_test.go#TestOverlay_DestructionIsDiscardedByDefault",
+    "sandbox_test.go#TestOverlay_RmRfHomeLosesNothing",
+    "sandbox_test.go#TestOverlay_WritesSucceedButDoNotPersist"
+   ]
+  },
+  "filesystem-confinement.throwaway-overlay.002": {
+   "file": "specs/filesystem-confinement/throwaway-overlay/throwaway-home-writes.feature",
+   "fingerprint": "32fe8a58b3da",
+   "human": false,
+   "rule": "azkaban.overlay.persist-makes-writes-real",
+   "source": "main.go#outer",
+   "status": "verified",
+   "test": "sandbox_test.go#TestPersist_ExitCodeIsNotEvidence",
+   "tests": [
+    "sandbox_test.go#TestPersist_ExitCodeIsNotEvidence"
+   ]
+  },
+  "filesystem-confinement.throwaway-overlay.003": {
+   "file": "specs/filesystem-confinement/throwaway-overlay/throwaway-home-writes.feature",
+   "fingerprint": "32fe8a58b3da",
+   "human": false,
+   "rule": "azkaban.overlay.persist-path-survives",
+   "source": "main.go#outer",
+   "status": "verified",
+   "test": "sandbox_test.go#TestPersistPath_OneFileSurvivesTheOverlay",
+   "tests": [
+    "sandbox_test.go#TestPersistPath_OneFileSurvivesTheOverlay"
+   ]
+  },
+  "filesystem-confinement.throwaway-overlay.004": {
+   "file": "specs/filesystem-confinement/throwaway-overlay/throwaway-home-writes.feature",
+   "fingerprint": "32fe8a58b3da",
+   "human": false,
+   "rule": "azkaban.overlay.missing-persist-path-warns",
+   "source": "main.go#outer",
+   "status": "verified",
+   "test": "sandbox_test.go#TestPersistPath_MissingSourceWarns",
+   "tests": [
+    "sandbox_test.go#TestPersistPath_MissingSourceWarns"
+   ]
+  },
+  "filesystem-confinement.throwaway-overlay.005": {
+   "file": "specs/filesystem-confinement/throwaway-overlay/throwaway-home-writes.feature",
+   "fingerprint": "32fe8a58b3da",
+   "human": false,
+   "rule": "azkaban.overlay.old-bubblewrap-falls-back-to-real-writes",
+   "source": "main.go#outer",
+   "status": "inferred",
+   "test": "",
+   "tests": []
+  },
+  "network-control.host-allowlist-proxy.001": {
+   "file": "specs/network-control/host-allowlist-proxy/egress-host-allowlist-setup.feature",
+   "fingerprint": "32fe8a58b3da",
+   "human": false,
+   "rule": "azkaban.egress.host-allowlist-needs-enforcement",
+   "source": "main.go#outer",
+   "status": "inferred",
+   "test": "",
+   "tests": []
+  },
+  "network-control.host-allowlist-proxy.002": {
+   "file": "specs/network-control/host-allowlist-proxy/egress-host-allowlist-setup.feature",
+   "fingerprint": "32fe8a58b3da",
+   "human": false,
+   "rule": "azkaban.egress.only-proxy-port-reachable",
+   "source": "main.go#outer",
+   "status": "inferred",
+   "test": "",
+   "tests": []
+  },
+  "network-control.host-allowlist-proxy.003": {
+   "file": "specs/network-control/host-allowlist-proxy/egress-host-allowlist.feature",
+   "fingerprint": "1804dbe9acdd",
+   "human": false,
+   "rule": "network.egress-proxy.only-allowlisted-hosts",
+   "source": "egressproxy.go#hostAllowed",
+   "status": "verified",
+   "test": "egressproxy_test.go#TestHostAllowlistMatchesExactlyAndByWildcard",
+   "tests": [
+    "egressproxy_test.go#TestHostAllowlistMatchesExactlyAndByWildcard",
+    "egressproxy_test.go#TestWildcardDoesNotCoverTheBareDomain",
+    "egressproxy_test.go#TestEgressProxyEndToEnd"
+   ]
+  },
+  "network-control.host-allowlist-proxy.004": {
+   "file": "specs/network-control/host-allowlist-proxy/egress-host-allowlist.feature",
+   "fingerprint": "2968776d0f95",
+   "human": false,
+   "rule": "network.egress-proxy.no-internal-destinations",
+   "source": "egressproxy.go#unroutable",
+   "status": "verified",
+   "test": "egressproxy_test.go#TestUnroutableRefusesTheAddressesThatDefeatAnAllowlist",
+   "tests": [
+    "egressproxy_test.go#TestUnroutableRefusesTheAddressesThatDefeatAnAllowlist",
+    "egressproxy_test.go#TestUnroutableAllowsOrdinaryPublicAddresses"
+   ]
+  },
+  "network-control.host-allowlist-proxy.005": {
+   "file": "specs/network-control/host-allowlist-proxy/egress-host-allowlist.feature",
+   "fingerprint": "bfcc7a8d1940",
+   "human": false,
+   "rule": "network.egress-proxy.loopback-only",
+   "source": "egressproxy.go#startEgressProxy",
+   "status": "verified",
+   "test": "egressproxy_test.go#TestEgressProxyListensOnLoopbackOnly",
+   "tests": [
+    "egressproxy_test.go#TestEgressProxyListensOnLoopbackOnly"
+   ]
+  },
+  "process-isolation.namespaces-environment.001": {
+   "file": "specs/process-isolation/namespaces-environment/jail-process-and-environment.feature",
+   "fingerprint": "32fe8a58b3da",
+   "human": false,
+   "rule": "azkaban.environment.host-env-cleared",
+   "source": "main.go#outer",
+   "status": "verified",
+   "test": "sandbox_test.go#TestEnv_HostSecretsAreCleared",
+   "tests": [
+    "sandbox_test.go#TestEnv_HostSecretsAreCleared"
+   ]
+  },
+  "process-isolation.namespaces-environment.002": {
+   "file": "specs/process-isolation/namespaces-environment/jail-process-and-environment.feature",
+   "fingerprint": "32fe8a58b3da",
+   "human": false,
+   "rule": "azkaban.environment.keep-env-inherits-everything",
+   "source": "main.go#outer",
+   "status": "verified",
+   "test": "sandbox_test.go#TestEnv_KeepEnvRestoresInheritance",
+   "tests": [
+    "sandbox_test.go#TestEnv_KeepEnvRestoresInheritance"
+   ]
+  },
+  "process-isolation.namespaces-environment.003": {
+   "file": "specs/process-isolation/namespaces-environment/jail-process-and-environment.feature",
+   "fingerprint": "32fe8a58b3da",
+   "human": false,
+   "rule": "azkaban.isolation.nested-user-namespaces-blocked",
+   "source": "main.go#outer",
+   "status": "verified",
+   "test": "sandbox_test.go#TestUserns_NestingIsBlockedByDefault",
+   "tests": [
+    "sandbox_test.go#TestUserns_NestingIsBlockedByDefault"
+   ]
+  },
+  "process-isolation.namespaces-environment.004": {
+   "file": "specs/process-isolation/namespaces-environment/jail-process-and-environment.feature",
+   "fingerprint": "32fe8a58b3da",
+   "human": false,
+   "rule": "azkaban.isolation.sandbox-spec-hidden-from-jail",
+   "source": "main.go#outer",
+   "status": "verified",
+   "test": "sandbox_test.go#TestProc_SandboxSpecIsNoLongerInCmdline",
+   "tests": [
+    "sandbox_test.go#TestProc_SandboxSpecIsNoLongerInCmdline",
+    "sandbox_test.go#TestProc_KernelSymbolsAreMasked"
+   ]
+  },
+  "process-isolation.namespaces-environment.005": {
+   "file": "specs/process-isolation/namespaces-environment/jail-process-and-environment.feature",
+   "fingerprint": "32fe8a58b3da",
+   "human": false,
+   "rule": "azkaban.run.exit-code-propagated",
+   "source": "main.go#outer",
+   "status": "verified",
+   "test": "sandbox_test.go#TestExitCode_IsPropagated",
+   "tests": [
+    "sandbox_test.go#TestExitCode_IsPropagated"
+   ]
+  },
+  "process-isolation.namespaces-environment.006": {
+   "file": "specs/process-isolation/namespaces-environment/jail-process-and-environment.feature",
+   "fingerprint": "32fe8a58b3da",
+   "human": false,
+   "rule": "azkaban.run.unknown-command-refused",
+   "source": "main.go#outer",
+   "status": "inferred",
+   "test": "",
+   "tests": []
+  },
+  "process-isolation.namespaces-environment.007": {
+   "file": "specs/process-isolation/namespaces-environment/jail-environment.feature",
+   "fingerprint": "dfc9d8131d6e",
+   "human": false,
+   "rule": "jail.vars.host-secrets-dropped",
+   "source": "config.go#envKeep",
+   "status": "verified",
+   "test": "sandbox_test.go#TestEnv_HostSecretsAreCleared",
+   "tests": [
+    "sandbox_test.go#TestEnv_HostSecretsAreCleared",
+    "sandbox_test.go#TestEnv_HostEnvironmentIsNotReadableViaProc1"
+   ]
+  },
+  "process-isolation.namespaces-environment.008": {
+   "file": "specs/process-isolation/namespaces-environment/jail-environment.feature",
+   "fingerprint": "dfc9d8131d6e",
+   "human": false,
+   "rule": "jail.vars.config-admits-named-variable",
+   "source": "config.go#envKeep",
+   "status": "verified",
+   "test": "sandbox_test.go#TestConfig_LegitimateEntriesStillWork",
+   "tests": [
+    "sandbox_test.go#TestConfig_LegitimateEntriesStillWork"
+   ]
+  },
+  "process-isolation.namespaces-environment.009": {
+   "file": "specs/process-isolation/namespaces-environment/jail-environment.feature",
+   "fingerprint": "dfc9d8131d6e",
+   "human": false,
+   "rule": "jail.vars.keep-flag-inherits-all",
+   "source": "config.go#envKeep",
+   "status": "verified",
+   "test": "sandbox_test.go#TestEnv_KeepEnvRestoresInheritance",
+   "tests": [
+    "sandbox_test.go#TestEnv_KeepEnvRestoresInheritance"
+   ]
+  },
+  "process-isolation.namespaces-environment.010": {
+   "file": "specs/process-isolation/namespaces-environment/jail-environment.feature",
+   "fingerprint": "4879d1c87fc1",
+   "human": false,
+   "rule": "jail.proc.kernel-symbols-masked",
+   "source": "config.go#procMask",
+   "status": "verified",
+   "test": "sandbox_test.go#TestProc_KernelSymbolsAreMasked",
+   "tests": [
+    "sandbox_test.go#TestProc_KernelSymbolsAreMasked"
+   ]
+  },
+  "process-isolation.namespaces-environment.011": {
+   "file": "specs/process-isolation/namespaces-environment/jail-hostname-resolver-terminal.feature",
+   "fingerprint": "85517b98f527",
+   "human": false,
+   "rule": "jail.network.own-hostname-resolves",
+   "source": "helpers.go#writeHosts",
+   "status": "inferred",
+   "test": "",
+   "tests": []
+  },
+  "process-isolation.namespaces-environment.012": {
+   "file": "specs/process-isolation/namespaces-environment/jail-hostname-resolver-terminal.feature",
+   "fingerprint": "f782bd944a2d",
+   "human": false,
+   "rule": "jail.network.host-resolver-copied",
+   "source": "helpers.go#writeResolv",
+   "status": "inferred",
+   "test": "",
+   "tests": []
+  },
+  "process-isolation.namespaces-environment.013": {
+   "file": "specs/process-isolation/namespaces-environment/jail-hostname-resolver-terminal.feature",
+   "fingerprint": "85517b98f527",
+   "human": false,
+   "rule": "jail.network.unreadable-host-file-warns",
+   "source": "helpers.go#writeHosts",
+   "status": "inferred",
+   "test": "",
+   "tests": []
+  },
+  "process-isolation.namespaces-environment.014": {
+   "file": "specs/process-isolation/namespaces-environment/jail-hostname-resolver-terminal.feature",
+   "fingerprint": "e4e80a6190d1",
+   "human": false,
+   "rule": "jail.terminal.tiocsti-warning",
+   "source": "helpers.go#warnTIOCSTI",
+   "status": "inferred",
+   "test": "",
+   "tests": []
+  },
+  "process-isolation.resource-limits.001": {
+   "file": "specs/process-isolation/resource-limits/memory-cap.feature",
+   "fingerprint": "aa9c9d593838",
+   "human": false,
+   "rule": "resources.memory.cap-enforced",
+   "source": "cgroups.go#setupCgroup",
+   "status": "verified",
+   "test": "sandbox_test.go#TestMemMax_CapsTheOverlay",
+   "tests": [
+    "sandbox_test.go#TestMemMax_CapsTheOverlay"
+   ]
+  },
+  "process-isolation.resource-limits.002": {
+   "file": "specs/process-isolation/resource-limits/memory-cap.feature",
+   "fingerprint": "aa9c9d593838",
+   "human": false,
+   "rule": "resources.memory.unenforceable-cap-refused",
+   "source": "cgroups.go#setupCgroup",
+   "status": "inferred",
+   "test": "",
+   "tests": []
+  },
+  "process-isolation.resource-limits.003": {
+   "file": "specs/process-isolation/resource-limits/memory-cap.feature",
+   "fingerprint": "aa9c9d593838",
+   "human": false,
+   "rule": "resources.memory.swap-not-disabled-warns",
+   "source": "cgroups.go#setupCgroup",
+   "status": "inferred",
+   "test": "",
+   "tests": []
+  },
+  "process-isolation.resource-limits.004": {
+   "file": "specs/process-isolation/resource-limits/memory-cap.feature",
+   "fingerprint": "aa9c9d593838",
+   "human": false,
+   "rule": "resources.memory.cap-also-limits-processes",
+   "source": "cgroups.go#setupCgroup",
+   "status": "inferred",
+   "test": "",
+   "tests": []
+  },
+  "process-isolation.resource-limits.005": {
+   "file": "specs/process-isolation/resource-limits/memory-cap.feature",
+   "fingerprint": "c366f6ba7c00",
+   "human": false,
+   "rule": "resources.memory.uncapped-by-default",
+   "source": "cgroups.go#cgroupUnavailable",
+   "status": "inferred",
+   "test": "",
+   "tests": []
+  },
+  "process-isolation.resource-limits.006": {
+   "file": "specs/process-isolation/resource-limits/runaway-resource-caps.feature",
+   "fingerprint": "6758e632a1af",
+   "human": false,
+   "rule": "jail.resources.rlimits-capped-by-default",
+   "source": "helpers.go#applyRlimits",
+   "status": "verified",
+   "test": "sandbox_test.go#TestRlimit_FileSizeIsCapped",
+   "tests": [
+    "sandbox_test.go#TestRlimit_FileSizeIsCapped",
+    "sandbox_test.go#TestRlimit_OversizedWriteIsRefused"
+   ]
+  },
+  "process-isolation.resource-limits.007": {
+   "file": "specs/process-isolation/resource-limits/runaway-resource-caps.feature",
+   "fingerprint": "6758e632a1af",
+   "human": false,
+   "rule": "jail.resources.rlimits-opt-out",
+   "source": "helpers.go#applyRlimits",
+   "status": "verified",
+   "test": "sandbox_test.go#TestRlimit_CanBeDisabled",
+   "tests": [
+    "sandbox_test.go#TestRlimit_CanBeDisabled"
+   ]
+  },
+  "process-isolation.resource-limits.008": {
+   "file": "specs/process-isolation/resource-limits/runaway-resource-caps.feature",
+   "fingerprint": "6758e632a1af",
+   "human": false,
+   "rule": "jail.resources.stricter-host-limit-kept",
+   "source": "helpers.go#applyRlimits",
+   "status": "inferred",
+   "test": "",
+   "tests": []
+  },
+  "process-isolation.resource-limits.009": {
+   "file": "specs/process-isolation/resource-limits/runaway-resource-caps.feature",
+   "fingerprint": "6758e632a1af",
+   "human": false,
+   "rule": "jail.resources.unset-cap-warns",
+   "source": "helpers.go#applyRlimits",
+   "status": "inferred",
+   "test": "",
+   "tests": []
+  },
+  "recovery-elevation.rollback.001": {
+   "file": "specs/recovery-elevation/rollback/rollback-run-reporting.feature",
+   "fingerprint": "32fe8a58b3da",
+   "human": false,
+   "rule": "azkaban.rollback.real-writes-announced",
+   "source": "main.go#outer",
+   "status": "inferred",
+   "test": "",
+   "tests": []
+  },
+  "recovery-elevation.rollback.002": {
+   "file": "specs/recovery-elevation/rollback/rollback-run-reporting.feature",
+   "fingerprint": "888e29692ad8",
+   "human": false,
+   "rule": "azkaban.rollback.change-summary-after-run",
+   "source": "main.go#finishRollback",
+   "status": "inferred",
+   "test": "",
+   "tests": []
+  },
+  "recovery-elevation.rollback.003": {
+   "file": "specs/recovery-elevation/rollback/rollback-runs.feature",
+   "fingerprint": "888e29692ad8",
+   "human": false,
+   "rule": "rollback.runs.snapshot-either-side-even-on-failure",
+   "source": "main.go#finishRollback",
+   "status": "inferred",
+   "test": "",
+   "tests": []
+  },
+  "recovery-elevation.rollback.004": {
+   "file": "specs/recovery-elevation/rollback/rollback-runs.feature",
+   "fingerprint": "2e041f83079f",
+   "human": false,
+   "rule": "rollback.runs.incompatible-with-persist",
+   "source": "flags.go#parseFlags",
+   "status": "inferred",
+   "test": "",
+   "tests": []
+  },
+  "recovery-elevation.rollback.005": {
+   "file": "specs/recovery-elevation/rollback/rollback-runs.feature",
+   "fingerprint": "5500535fac46",
+   "human": false,
+   "rule": "rollback.snapshot.excludes-repos-build-output-and-links",
+   "source": "rollback.go#takeSnapshot",
+   "status": "verified",
+   "test": "rollback_test.go#TestRollbackSkipsGitAndBuildOutput",
+   "tests": [
+    "rollback_test.go#TestRollbackSkipsGitAndBuildOutput",
+    "rollback_test.go#TestRollbackDoesNotFollowSymlinksOutOfTheRoot"
+   ]
+  },
+  "recovery-elevation.rollback.006": {
+   "file": "specs/recovery-elevation/rollback/rollback-runs.feature",
+   "fingerprint": "4c388ded923f",
+   "human": false,
+   "rule": "rollback.review.list-sessions-newest-first",
+   "source": "rollback.go#rollbackList",
+   "status": "inferred",
+   "test": "",
+   "tests": []
+  },
+  "recovery-elevation.rollback.007": {
+   "file": "specs/recovery-elevation/rollback/rollback-runs.feature",
+   "fingerprint": "b952a3bf2cd8",
+   "human": false,
+   "rule": "rollback.review.show-changes-filtered",
+   "source": "rollback.go#rollbackShow",
+   "status": "verified",
+   "test": "rollback_test.go#TestRollbackRestoresWhatWasDeleted",
+   "tests": [
+    "rollback_test.go#TestRollbackRestoresWhatWasDeleted"
+   ]
+  },
+  "recovery-elevation.rollback.008": {
+   "file": "specs/recovery-elevation/rollback/rollback-runs.feature",
+   "fingerprint": "907d27e02e6a",
+   "human": false,
+   "rule": "rollback.restore.puts-back-before-content-never-deletes",
+   "source": "rollback.go#restore",
+   "status": "verified",
+   "test": "rollback_test.go#TestRollbackRestoresWhatWasDeleted",
+   "tests": [
+    "rollback_test.go#TestRollbackRestoresWhatWasDeleted"
+   ]
+  },
+  "recovery-elevation.rollback.009": {
+   "file": "specs/recovery-elevation/rollback/rollback-runs.feature",
+   "fingerprint": "907d27e02e6a",
+   "human": false,
+   "rule": "rollback.restore.refuses-unverifiable-content",
+   "source": "rollback.go#restore",
+   "status": "verified",
+   "test": "rollback_test.go#TestRollbackRefusesCorruptedContent",
+   "tests": [
+    "rollback_test.go#TestRollbackRefusesCorruptedContent"
+   ]
+  },
+  "recovery-elevation.rollback.010": {
+   "file": "specs/recovery-elevation/rollback/rollback-runs.feature",
+   "fingerprint": "a56adb4ced75",
+   "human": false,
+   "rule": "rollback.cleanup.keep-newest-sessions",
+   "source": "rollback.go#rollbackCleanup",
+   "status": "inferred",
+   "test": "",
+   "tests": []
+  },
+  "recovery-elevation.runtime-elevation.001": {
+   "file": "specs/recovery-elevation/runtime-elevation/runtime-read-elevation.feature",
+   "fingerprint": "430af2fc9383",
+   "human": false,
+   "rule": "elevation.scope.writes-never-elevated",
+   "source": "elevate.go#wantsWrite",
+   "status": "verified",
+   "test": "elevate_test.go#TestOnlyAPlainReadIsEverElevated",
+   "tests": [
+    "elevate_test.go#TestOnlyAPlainReadIsEverElevated"
+   ]
+  },
+  "recovery-elevation.runtime-elevation.002": {
+   "file": "specs/recovery-elevation/runtime-elevation/runtime-read-elevation.feature",
+   "fingerprint": "a502d9dfdcba",
+   "human": false,
+   "rule": "elevation.grant.exact-existing-path-read-only",
+   "source": "elevate.go#openForJail",
+   "status": "verified",
+   "test": "elevate_test.go#TestAnApprovedOpenIsReadOnlyAndRefusesASymlink",
+   "tests": [
+    "elevate_test.go#TestAnApprovedOpenIsReadOnlyAndRefusesASymlink",
+    "elevate_test.go#TestAnApprovedOpenNeverCreatesTheFile"
+   ]
+  },
+  "transparency.dry-run.001": {
+   "file": "specs/transparency/dry-run/dry-run-audit-trail.feature",
+   "fingerprint": "32fe8a58b3da",
+   "human": false,
+   "rule": "azkaban.dry-run.prints-command-runs-nothing",
+   "source": "main.go#outer",
+   "status": "verified",
+   "test": "why_test.go#TestDryRunShowsTheGuidanceBinds",
+   "tests": [
+    "why_test.go#TestDryRunShowsTheGuidanceBinds"
+   ]
+  },
+  "transparency.dry-run.002": {
+   "file": "specs/transparency/dry-run/dry-run-audit-trail.feature",
+   "fingerprint": "32fe8a58b3da",
+   "human": false,
+   "rule": "azkaban.dry-run.discloses-policy-with-placeholders",
+   "source": "main.go#outer",
+   "status": "inferred",
+   "test": "",
+   "tests": []
+  },
+  "transparency.in-jail-guidance.001": {
+   "file": "specs/transparency/in-jail-guidance/in-jail-policy-description.feature",
+   "fingerprint": "32fe8a58b3da",
+   "human": false,
+   "rule": "azkaban.guidance.policy-placed-read-only",
+   "source": "main.go#outer",
+   "status": "verified",
+   "test": "why_test.go#TestDryRunShowsTheGuidanceBinds",
+   "tests": [
+    "why_test.go#TestDryRunShowsTheGuidanceBinds",
+    "why_test.go#TestNoGuidanceLeavesThemOut"
+   ]
+  },
+  "transparency.in-jail-guidance.002": {
+   "file": "specs/transparency/in-jail-guidance/in-jail-guidance.feature",
+   "fingerprint": "609fef29cbc1",
+   "human": false,
+   "rule": "transparency.guidance.readme-explains-sandbox-errors",
+   "source": "guidance.go#guidanceText",
+   "status": "verified",
+   "test": "why_test.go#TestGuidanceTextNamesAReachableCommand",
+   "tests": [
+    "why_test.go#TestGuidanceTextNamesAReachableCommand"
+   ]
+  },
+  "transparency.in-jail-guidance.003": {
+   "file": "specs/transparency/in-jail-guidance/in-jail-guidance.feature",
+   "fingerprint": "7baccf407c3d",
+   "human": false,
+   "rule": "transparency.guidance.lists-only-what-was-granted",
+   "source": "cgroups.go#presentUnder",
+   "status": "verified",
+   "test": "why_test.go#TestPresentUnderSkipsWhatIsNotOnTheHost",
+   "tests": [
+    "why_test.go#TestPresentUnderSkipsWhatIsNotOnTheHost"
+   ]
+  },
+  "transparency.in-jail-guidance.004": {
+   "file": "specs/transparency/in-jail-guidance/in-jail-guidance.feature",
+   "fingerprint": "609fef29cbc1",
+   "human": false,
+   "rule": "transparency.guidance.readme-describes-network-mode",
+   "source": "guidance.go#guidanceText",
+   "status": "inferred",
+   "test": "",
+   "tests": []
+  },
+  "transparency.in-jail-guidance.005": {
+   "file": "specs/transparency/in-jail-guidance/in-jail-guidance.feature",
+   "fingerprint": "609fef29cbc1",
+   "human": false,
+   "rule": "transparency.guidance.readme-describes-overlay",
+   "source": "guidance.go#guidanceText",
+   "status": "verified",
+   "test": "why_test.go#TestGuidanceTextNamesAReachableCommand",
+   "tests": [
+    "why_test.go#TestGuidanceTextNamesAReachableCommand"
+   ]
+  },
+  "transparency.in-jail-guidance.006": {
+   "file": "specs/transparency/in-jail-guidance/in-jail-guidance.feature",
+   "fingerprint": "7958e13cb299",
+   "human": false,
+   "rule": "transparency.guidance.policy-file-contract",
+   "source": "guidance.go#jailPolicy",
+   "status": "verified",
+   "test": "why_test.go#TestSelfPolicyRoundTripsThroughJSON",
+   "tests": [
+    "why_test.go#TestSelfPolicyRoundTripsThroughJSON"
+   ]
+  },
+  "transparency.in-jail-guidance.007": {
+   "file": "specs/transparency/in-jail-guidance/in-jail-guidance.feature",
+   "fingerprint": "52bc8be42f6c",
+   "human": false,
+   "rule": "transparency.guidance.claude-hook-speaks-only-on-jail-failures",
+   "source": "guidance.go#claudeHook",
+   "status": "inferred",
+   "test": "",
+   "tests": []
+  },
+  "transparency.policy-query.001": {
+   "file": "specs/transparency/policy-query/policy-query.feature",
+   "fingerprint": "ab7f99789563",
+   "human": false,
+   "rule": "transparency.why.unlisted-home-path-is-absent",
+   "source": "why.go#decide",
+   "status": "verified",
+   "test": "why_test.go#TestWhyDefaultDenyIsAbsentNotDenied",
+   "tests": [
+    "why_test.go#TestWhyDefaultDenyIsAbsentNotDenied",
+    "why_test.go#TestSelfDistinguishesAbsentFromDenied"
+   ]
+  },
+  "transparency.policy-query.002": {
+   "file": "specs/transparency/policy-query/policy-query.feature",
+   "fingerprint": "ab7f99789563",
+   "human": false,
+   "rule": "transparency.why.overlay-writes-do-not-survive",
+   "source": "why.go#decide",
+   "status": "verified",
+   "test": "why_test.go#TestWhyOverlayIsWritableButDoesNotSurvive",
+   "tests": [
+    "why_test.go#TestWhyOverlayIsWritableButDoesNotSurvive",
+    "why_test.go#TestWhyPersistFlipsSurvival",
+    "why_test.go#TestSelfSaysWhenAWriteWillBeDiscarded"
+   ]
+  },
+  "transparency.policy-query.003": {
+   "file": "specs/transparency/policy-query/policy-query.feature",
+   "fingerprint": "37333bcddcfe",
+   "human": false,
+   "rule": "transparency.why.jail-config-is-frozen",
+   "source": "why.go#topLayer",
+   "status": "verified",
+   "test": "why_test.go#TestWhyRoFreezeBeatsAWritableParent",
+   "tests": [
+    "why_test.go#TestWhyRoFreezeBeatsAWritableParent"
+   ]
+  },
+  "transparency.policy-query.004": {
+   "file": "specs/transparency/policy-query/policy-query.feature",
+   "fingerprint": "37333bcddcfe",
+   "human": false,
+   "rule": "transparency.why.credential-stores-masked",
+   "source": "why.go#topLayer",
+   "status": "verified",
+   "test": "why_test.go#TestWhyMaskBeatsTheWritableParent",
+   "tests": [
+    "why_test.go#TestWhyMaskBeatsTheWritableParent",
+    "why_test.go#TestWhyConfigUnmasksACredentialStore",
+    "why_test.go#TestWhyAParentOfAMaskedPathIsStillWritable",
+    "why_test.go#TestWhySkipsAnEntryWithNoSourceOnTheHost",
+    "why_test.go#TestSelfLongestMatchWinsSoAMaskBeatsItsWritableParent"
+   ]
+  },
+  "transparency.policy-query.005": {
+   "file": "specs/transparency/policy-query/policy-query.feature",
+   "fingerprint": "ab7f99789563",
+   "human": false,
+   "rule": "transparency.why.project-dir-writes-persist",
+   "source": "why.go#decide",
+   "status": "verified",
+   "test": "why_test.go#TestWhyProjectDirIsRealAndNeverOverlaid",
+   "tests": [
+    "why_test.go#TestWhyProjectDirIsRealAndNeverOverlaid",
+    "why_test.go#TestSelfNamesTheProjectAsTheOnePlaceWritesPersist"
+   ]
+  },
+  "transparency.policy-query.006": {
+   "file": "specs/transparency/policy-query/policy-query.feature",
+   "fingerprint": "54f4ebf093b5",
+   "human": false,
+   "rule": "transparency.why.system-paths-follow-base-layout",
+   "source": "why.go#systemVerdict",
+   "status": "verified",
+   "test": "why_test.go#TestWhySystemPathsFollowTheBaseLayout",
+   "tests": [
+    "why_test.go#TestWhySystemPathsFollowTheBaseLayout"
+   ]
+  },
+  "transparency.policy-query.007": {
+   "file": "specs/transparency/policy-query/policy-query.feature",
+   "fingerprint": "a0aae82bf124",
+   "human": false,
+   "rule": "transparency.why.network-answer-follows-run-flags",
+   "source": "why.go#decideNet",
+   "status": "verified",
+   "test": "why_test.go#TestWhyNetAnswersPortsAndIsHonestAboutHosts",
+   "tests": [
+    "why_test.go#TestWhyNetAnswersPortsAndIsHonestAboutHosts"
+   ]
+  },
+  "transparency.policy-query.008": {
+   "file": "specs/transparency/policy-query/policy-query.feature",
+   "fingerprint": "a0aae82bf124",
+   "human": false,
+   "rule": "transparency.why.host-question-ignores-host-allowlist",
+   "source": "why.go#decideNet",
+   "status": "verified",
+   "test": "why_test.go#TestWhyNetAnswersPortsAndIsHonestAboutHosts",
+   "tests": [
+    "why_test.go#TestWhyNetAnswersPortsAndIsHonestAboutHosts"
+   ]
+  },
+  "transparency.policy-query.009": {
+   "file": "specs/transparency/policy-query/policy-query.feature",
+   "fingerprint": "d67e0e500a74",
+   "human": false,
+   "rule": "transparency.why.self-refuses-outside-a-jail",
+   "source": "why.go#loadSelfPolicy",
+   "status": "verified",
+   "test": "why_test.go#TestSelfOutsideAJailSaysSoRatherThanGuessing",
+   "tests": [
+    "why_test.go#TestSelfOutsideAJailSaysSoRatherThanGuessing",
+    "why_test.go#TestSelfInsideAJailWithNoPolicyBlamesNoGuidance"
+   ]
+  },
+  "transparency.run-record.001": {
+   "file": "specs/transparency/run-record/run-record.feature",
+   "fingerprint": "b82295632085",
+   "human": false,
+   "rule": "transparency.run-record.one-owner-only-jsonl-file-per-run",
+   "source": "audit.go#startAudit",
+   "status": "verified",
+   "test": "audit_test.go#TestAuditWritesOneJSONLineAnEventAndClosesWithAnExit",
+   "tests": [
+    "audit_test.go#TestAuditWritesOneJSONLineAnEventAndClosesWithAnExit"
+   ]
+  },
+  "transparency.run-record.002": {
+   "file": "specs/transparency/run-record/run-record.feature",
+   "fingerprint": "04eb6f1bdaf5",
+   "human": false,
+   "rule": "transparency.run-record.on-unless-explicitly-turned-off",
+   "source": "main.go#main",
+   "status": "verified",
+   "test": "audit_test.go#TestAuditIsOffWhenAskedAndOnOtherwise",
+   "tests": [
+    "audit_test.go#TestAuditIsOffWhenAskedAndOnOtherwise",
+    "audit_test.go#TestConfigCanTurnTheRecordOffAndATypoCannot"
+   ]
+  },
+  "transparency.run-record.003": {
+   "file": "specs/transparency/run-record/run-record.feature",
+   "fingerprint": "2817f77e5e84",
+   "human": false,
+   "rule": "transparency.run-record.credentials-redacted-from-command-line",
+   "source": "audit.go#redactArgv",
+   "status": "verified",
+   "test": "audit_test.go#TestRedactArgvKeepsCredentialsOutOfTheRecord",
+   "tests": [
+    "audit_test.go#TestRedactArgvKeepsCredentialsOutOfTheRecord",
+    "audit_test.go#TestRedactionErrsTowardsRedacting"
+   ]
+  },
+  "transparency.run-record.004": {
+   "file": "specs/transparency/run-record/run-record.feature",
+   "fingerprint": "2817f77e5e84",
+   "human": false,
+   "rule": "transparency.run-record.bearer-header-value-not-redacted",
+   "source": "audit.go#redactArgv",
+   "status": "inferred",
+   "test": "",
+   "tests": []
+  },
+  "transparency.run-record.005": {
+   "file": "specs/transparency/run-record/run-record.feature",
+   "fingerprint": "fa47458bee2d",
+   "human": false,
+   "rule": "transparency.run-record.forwarded-env-recorded-by-name-only",
+   "source": "audit.go#envNames",
+   "status": "verified",
+   "test": "audit_test.go#TestEnvNamesRecordsNamesAndNeverValues",
+   "tests": [
+    "audit_test.go#TestEnvNamesRecordsNamesAndNeverValues"
+   ]
+  },
+  "transparency.run-record.006": {
+   "file": "specs/transparency/run-record/run-record.feature",
+   "fingerprint": "b82295632085",
+   "human": false,
+   "rule": "transparency.run-record.unrecordable-run-still-starts",
+   "source": "audit.go#startAudit",
+   "status": "inferred",
+   "test": "",
+   "tests": []
+  }
+ },
+ "taxonomy": {
+  "domains": [
+   {
+    "areas": [
+     {
+      "description": "The built-in read-write, read-only, frozen and masked $HOME entries that decide what the tool can reach, plus extra --ro/--rw paths.",
+      "slug": "home-allowlists",
+      "title": "Home directory allowlists"
+     },
+     {
+      "description": "By default, writes to allowlisted home directories go to an overlay that is thrown away on exit; --persist and --persist-path make them stick.",
+      "slug": "throwaway-overlay",
+      "title": "Throwaway writes"
+     },
+     {
+      "description": "Covering token-bearing config files so the jail cannot destroy them, and keeping the jail's own config read-only so it cannot rewrite its policy.",
+      "slug": "secret-masking",
+      "title": "Secret masking"
+     },
+     {
+      "description": "The inner Landlock stage that applies filesystem and TCP-connect rules the process cannot undo, then runs the command.",
+      "slug": "kernel-access-rules",
+      "title": "Kernel access rules"
+     },
+     {
+      "description": "Optional GPU devices, X11/Wayland/audio sockets and named unix sockets passed into the jail.",
+      "slug": "device-display-passthrough",
+      "title": "Devices and display"
+     }
+    ],
+    "description": "What parts of the host filesystem the jailed tool can see, read and write, and how the main hazards are blocked.",
+    "slug": "filesystem-confinement",
+    "title": "Filesystem confinement"
+   },
+   {
+    "areas": [
+     {
+      "description": "The bubblewrap sandbox: private namespaces, the jail hostname and hosts file, user-namespace policy, and which environment variables get through.",
+      "slug": "namespaces-environment",
+      "title": "Namespaces and environment"
+     },
+     {
+      "description": "cgroup v2 memory and process limits plus rlimits that stop a runaway tool from exhausting the host.",
+      "slug": "resource-limits",
+      "title": "Resource limits"
+     }
+    ],
+    "description": "Isolating the jailed process from the host and capping the resources it can use.",
+    "slug": "process-isolation",
+    "title": "Process isolation"
+   },
+   {
+    "areas": [
+     {
+      "description": "Turning networking off completely or restricting outbound TCP to chosen ports.",
+      "slug": "network-modes",
+      "title": "Network modes"
+     },
+     {
+      "description": "An egress proxy that only lets the jail reach approved hostnames, with DNS rebinding and private-address protection.",
+      "slug": "host-allowlist-proxy",
+      "title": "Host allowlist proxy"
+     }
+    ],
+    "description": "Controlling which outbound connections the jail can make.",
+    "slug": "network-control",
+    "title": "Network control"
+   },
+   {
+    "areas": [
+     {
+      "description": "A proxy in front of the Docker or Podman socket that refuses dangerous create requests and any body it cannot parse, plus the explicit unfiltered option.",
+      "slug": "socket-filtering",
+      "title": "Container socket filtering"
+     },
+     {
+      "description": "Tracking which containers and execs the jail created so it can act only on its own.",
+      "slug": "container-ownership",
+      "title": "Container ownership"
+     }
+    ],
+    "description": "Letting the jailed tool use Docker or Podman without giving it control of the host.",
+    "slug": "container-access",
+    "title": "Container access"
+   },
+   {
+    "areas": [
+     {
+      "description": "A filtering SSH-agent proxy that allows only listing keys and signing, with optional per-signature confirmation, plus the raw-agent option.",
+      "slug": "ssh-agent-forwarding",
+      "title": "SSH agent forwarding"
+     },
+     {
+      "description": "A loopback HTTP broker that adds real tokens to upstream requests under per-route policy, so the token never enters the jail.",
+      "slug": "credential-broker",
+      "title": "Credential broker"
+     }
+    ],
+    "description": "Letting the jail use credentials without holding the secrets.",
+    "slug": "credential-delegation",
+    "title": "Credential delegation"
+   },
+   {
+    "areas": [
+     {
+      "description": "Approving a denied file open on the terminal while the run continues, with the approval cache and allowlist matching.",
+      "slug": "runtime-elevation",
+      "title": "Runtime elevation"
+     },
+     {
+      "description": "Snapshotting writable roots so writes land for real and destruction can be reviewed and restored.",
+      "slug": "rollback",
+      "title": "Snapshot and rollback"
+     }
+    ],
+    "description": "Getting out of denials and undoing damage without losing the run.",
+    "slug": "recovery-elevation",
+    "title": "Recovery and elevation"
+   },
+   {
+    "areas": [
+     {
+      "description": "Printing the exact bubblewrap command as a copy-pasteable audit trail without running anything.",
+      "slug": "dry-run",
+      "title": "Dry run"
+     },
+     {
+      "description": "The `azkaban why` command, which explains what the jail would do with a given path, host or port and which rule decided.",
+      "slug": "policy-query",
+      "title": "Policy query"
+     },
+     {
+      "description": "A per-run JSONL log of what the jail had access to, plus warnings and denials.",
+      "slug": "run-record",
+      "title": "Run record"
+     },
+     {
+      "description": "A read-only description of the policy placed inside the jail, so the agent can tell sandbox denials from ordinary errors.",
+      "slug": "in-jail-guidance",
+      "title": "In-jail guidance"
+     }
+    ],
+    "description": "Showing the user and the agent what the jail allows and what happened during a run.",
+    "slug": "transparency",
+    "title": "Policy transparency"
+   },
+   {
+    "areas": [
+     {
+      "description": "Parsing flags into a jail request and the hand-written flag reference that explains what each default costs to change.",
+      "slug": "flags-usage",
+      "title": "Flags and usage"
+     },
+     {
+      "description": "Per-user additions from ~/.config/azkaban/config, such as extra paths and toolchain prefixes.",
+      "slug": "user-config",
+      "title": "User configuration file"
+     },
+     {
+      "description": "Shared helpers for fatal errors, degradation warnings and path handling.",
+      "slug": "errors-warnings",
+      "title": "Errors and warnings"
+     }
+    ],
+    "description": "How users invoke the jail and set it up for their own setup.",
+    "slug": "command-line",
+    "title": "Command line and configuration"
+   },
+   {
+    "areas": [
+     {
+      "description": "Make targets for static CGO-free builds, version stamping, installing and running.",
+      "slug": "build-release",
+      "title": "Build and install"
+     },
+     {
+      "description": "Test, coverage, lint, format and tidy targets and the pre-commit hook setup.",
+      "slug": "quality-checks",
+      "title": "Tests and lint"
+     },
+     {
+      "description": "The audit.sh script and make audit target that sweep the tree for threats.",
+      "slug": "threat-sweep",
+      "title": "Threat sweep"
+     }
+    ],
+    "description": "Building, testing, linting and threat-sweeping the project.",
+    "slug": "developer-tooling",
+    "title": "Developer tooling"
+   }
+  ]
+ }
+}
