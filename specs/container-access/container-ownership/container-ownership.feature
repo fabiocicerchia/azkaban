@@ -3,7 +3,7 @@ Feature: Acting only on the jail's own containers
   Lets operators give a coding agent the container socket, knowing it can only see and control the containers and exec sessions it created during this run, not other workloads on the host.
 
   Background:
-    Given Given the jail was started with the filtered container socket
+    Given the jail was started with the filtered container socket
 
   @id:container-access.container-ownership.001 @rule:container.ownership.foreign-resources-refused @verified @source:dockerownership.go#authorize @test:dockerproxy_destructive_test.go#TestDockerFilter_Ownership
   Scenario Outline: Operations on containers and exec sessions the jail did not create are refused

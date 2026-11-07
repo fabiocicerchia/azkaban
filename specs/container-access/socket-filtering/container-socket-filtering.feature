@@ -3,8 +3,8 @@ Feature: Filtering container requests from the jail
   Lets operators give a jailed agent a working docker/podman CLI while refusing any request that would reach host files, gain host privilege, or destroy data that has no other copy.
 
   Background:
-    Given Given a jail started for the project directory /home/dev/acme-app
-    And And the container socket is shared into the jail through the filter
+    Given a jail started for the project directory /home/dev/acme-app
+    And the container socket is shared into the jail through the filter
 
   @id:container-access.socket-filtering.005 @rule:container-access.socket-filtering.unmodelled-api-areas-refused @verified @source:dockerproxy.go#dockerFilterHandler @test:dockerproxy_destructive_test.go#TestDockerFilter_UnmodelledEndpointsAreRefused @test:dockerproxy_destructive_test.go#TestDockerFilter_LibpodAPIIsRefused @test:dockerproxy_destructive_test.go#TestDockerFilter_Ownership
   Scenario Outline: API areas outside everyday container, image and build work are refused

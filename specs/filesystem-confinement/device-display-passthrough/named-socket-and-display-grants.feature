@@ -17,7 +17,7 @@ Feature: Granting named sockets and the display
 
   @id:filesystem-confinement.device-display-passthrough.002 @rule:azkaban.display.only-display-sockets-shared @verified @source:main.go#outer @test:sandbox_test.go#TestDisplay_BindsNamedSocketsNotTheWholeRuntimeDir
   Scenario: Sharing the display exposes only display sockets, not the agent, dbus or container sockets
-    Given the runtime directory /run/user/1000 holds wayland-0, the dbus bus, a Docker socket and an SSH agent socket
+    Given the runtime directory /run/user/1000 holds wayland-0, the dbus bus, a Docker socket, a gpg agent and an SSH agent socket
     When the operator runs the jail with --display
     Then the jail sees /run/user/1000 as otherwise empty
     And only the matching display sockets such as wayland-0 are bound into it

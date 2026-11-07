@@ -33,9 +33,9 @@ Feature: Describing the jail to the tool inside it
 
     Examples:
       | network option                      | statement                                                                                                                    |
-      | network isolation                   | There is no network. Nothing outbound will work.                                                                             |
-      | a host allowlist of api.example.com | Outbound traffic goes through a filtering proxy (already in HTTPS_PROXY) and only these hosts are reachable: api.example.com |
-      | outbound TCP restricted to port 443 | Outbound TCP is restricted to ports: 443. Other ports are refused by the kernel, which looks like a connection failure.      |
+      | network isolation                   | **There is no network.** Nothing outbound will work.                                                                             |
+      | a host allowlist of api.example.com | Outbound traffic goes through a filtering proxy (already in `HTTPS_PROXY`) and only these hosts are reachable: - `api.example.com` |
+      | outbound TCP restricted to port 443 | Outbound TCP is restricted to ports: `443`. Other ports are refused by the kernel, which looks like a connection failure.        |
       | no network restriction              | (no network paragraph)                                                                                                       |
 
   @id:transparency.in-jail-guidance.005 @rule:transparency.guidance.readme-describes-overlay @verified @source:guidance.go#guidanceText @test:why_test.go#TestGuidanceTextNamesAReachableCommand @questionable
@@ -69,7 +69,7 @@ Feature: Describing the jail to the tool inside it
     Examples:
       | outcome                                          | response                                                                                                                                               |
       | success                                          | adds nothing                                                                                                                                           |
-      | a failure mentioning "Permission denied"         | adds context saying the failure may be the sandbox, sudo is inert, and to run /run/azkaban/azkaban why --path <the path> --op read|write --self --json |
+      | a failure mentioning "Permission denied"         | adds context saying the failure may be the sandbox, sudo is inert, and to run /run/azkaban/azkaban why --path <the path> --op read\|write --self --json |
       | a failure mentioning "No such file or directory" | adds the same sandbox context                                                                                                                          |
       | a failure mentioning "Connection refused"        | adds the same sandbox context                                                                                                                          |
       | a failure with any other error text              | adds nothing                                                                                                                                           |

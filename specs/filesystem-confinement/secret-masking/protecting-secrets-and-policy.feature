@@ -30,7 +30,7 @@ Feature: Protecting credentials and the jail's own policy
       | store                          | by                                             |
       | the GitHub CLI token file      | by default                                     |
       | the Docker registry login file | by default                                     |
-      | the desktop keyring            | by default                                     |
+      | the GNOME keyring directory    | by default                                     |
       | the file .config/mytool/token  | by the config line "mask .config/mytool/token" |
 
   @id:filesystem-confinement.secret-masking.003 @rule:azkaban.masking.naming-a-path-unmasks-it @verified @source:main.go#outer @test:sandbox_test.go#TestMask_UserConfigCanOptOut @test:sandbox_test.go#TestPersistPath_UnmasksCredentialStore @test:main_test.go#TestMentionedInConfigCoversPersist

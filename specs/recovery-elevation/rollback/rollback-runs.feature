@@ -42,14 +42,14 @@ Feature: Reviewing and undoing what a jailed run changed
     Given two --rollback runs have been recorded, the newer one deleted 3 files and modified 1
     When the operator runs azkaban rollback list
     Then the newer session is listed first as "<id>  2026-11-07 10:45  3 deleted, 1 modified  (claude --resume)"
-    And with no recorded sessions the operator instead sees "no rollback sessions in ~/.local/state/azkaban/rollback — run with --rollback first"
+    And with no recorded sessions the operator instead sees "no rollback sessions in /home/operator/.local/state/azkaban/rollback — run with --rollback first"
 
   @id:recovery-elevation.rollback.007 @rule:rollback.review.show-changes-filtered @verified @source:rollback.go#rollbackShow @test:rollback_test.go#TestRollbackRestoresWhatWasDeleted
   Scenario Outline: Showing a session lists what the run deleted, modified and added, optionally narrowed by path
     Given session 20261107T104500Z deleted ~/.claude/projects/a.jsonl, modified ~/.claude/history.jsonl and added ~/.claude/new.txt
     When the operator runs azkaban rollback show 20261107T104500Z <filter>
     Then the operator sees <listed>
-    And the listing ends with "Put them back with: azkaban rollback restore 20261107T104500Z [path-substring...]"
+    And the listing ends with "Put them back with:" followed by "azkaban rollback restore 20261107T104500Z [path-substring...]"
 
     Examples:
       | filter   | listed                                                    |

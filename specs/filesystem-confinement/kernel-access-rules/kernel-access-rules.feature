@@ -38,7 +38,7 @@ Feature: Enforcing kernel access rules inside the jail
   @id:filesystem-confinement.kernel-access-rules.003 @rule:jail.landlock.pseudo-terminals-usable @verified @source:landlock.go#landlockStage @test:sandbox_test.go#TestRegression_PtyAllocationWorksUnderLandlock
   Scenario: A jailed tool can open a new pseudo-terminal
     When the jailed tool opens a new pseudo-terminal and writes to it
-    Then the pseudo-terminal opens and the tool prints PTY-OK
+    Then the pseudo-terminal opens and the write to it succeeds
 
   @id:filesystem-confinement.kernel-access-rules.004 @rule:jail.landlock.outbound-tcp-limited-to-listed-ports @verified @source:landlock.go#landlockStage @test:sandbox_test.go#TestNetPorts_RestrictOutboundTCP
   Scenario: With a port allowlist, outbound TCP to any other port is refused
@@ -58,7 +58,7 @@ Feature: Enforcing kernel access rules inside the jail
       | input                                    | message                                                        | code |
       | --net-ports 70000                        | azkaban: bad --net-ports entry: 70000                          | 2    |
       | --net-ports https                        | azkaban: bad --net-ports entry: https                          | 2    |
-      | a command that is not on the jail's PATH | azkaban: exec: "<command>": executable file not found in $PATH | 127  |
+      | a command that is not on the PATH        | azkaban: command not found: <command>                          | 127  |
 
   @id:filesystem-confinement.kernel-access-rules.006 @rule:jail.landlock.policy-channel-hidden-from-tool @verified @source:landlock.go#landlockStage @test:sandbox_test.go#TestEnv_InternalLandlockChannelIsStripped
   Scenario: The jailed tool cannot read the allowlists from its environment

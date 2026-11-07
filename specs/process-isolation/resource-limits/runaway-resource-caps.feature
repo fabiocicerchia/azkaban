@@ -9,8 +9,8 @@ Feature: Capping what a runaway tool can consume
   Scenario Outline: A jailed tool runs under file-size, process, open-file and core-dump caps by default
     Given the operator has not passed --no-rlimits
     When the jailed tool checks its resource limits
-    Then the largest file it may write is <limit_value>
-    And writing a file past that size fails instead of filling memory
+    Then its <limit> limit is <limit_value>
+    And the soft and hard limits are both set to that value
 
     Examples:
       | limit          | limit_value |

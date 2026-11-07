@@ -22,4 +22,4 @@ Feature: Reporting what a rollback-enabled run changed
     Examples:
       | changes                        | status | summary                                                                                            |
       | changes nothing                | 0      | rollback: 20261107T104419Z — nothing was deleted or modified                                       |
-      | deletes 2 files and modifies 1 | 1      | rollback: 20261107T104419Z — 2 deleted, 1 modified. Review: azkaban rollback show 20261107T104419Z |
+      | deletes 2 files and modifies 1 | 1      | rollback: 20261107T104419Z — 2 deleted, 1 modified.                                             |

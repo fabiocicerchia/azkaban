@@ -8,8 +8,8 @@ Feature: Approving a denied read while the run continues
 
   @id:recovery-elevation.runtime-elevation.001 @rule:elevation.scope.writes-never-elevated @verified @source:elevate.go#wantsWrite @test:elevate_test.go#TestOnlyAPlainReadIsEverElevated
   Scenario Outline: An attempt to write outside the allowlist is never offered for approval
-    Given the file "/etc/hosts" is outside the allowlist
-    When the tool in the jail opens "/etc/hosts" with <flags>
+    Given the file "/srv/shared/tool.conf" is outside the allowlist
+    When the tool in the jail opens "/srv/shared/tool.conf" with <flags>
     Then the operator is not prompted
     And the jail's Landlock rules decide the open, which is refused because the path is outside the allowlist
 

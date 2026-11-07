@@ -20,9 +20,9 @@ Feature: Keeping host secrets out of the jail's environment and kernel views
     Then MY_TOOL_TOKEN reads passed-through inside the jail
 
   @id:process-isolation.namespaces-environment.009 @rule:jail.vars.keep-flag-inherits-all @verified @source:config.go#envKeep @test:sandbox_test.go#TestEnv_KeepEnvRestoresInheritance
-  Scenario: The keep-environment flag passes the whole host environment through
+  Scenario: The --keep-env flag passes the whole host environment through
     Given the operator's shell exports ANTHROPIC_API_KEY=sk-inherited
-    When the operator starts a tool in the jail with the keep-environment flag
+    When the operator starts a tool in the jail with --keep-env
     Then ANTHROPIC_API_KEY reads sk-inherited inside the jail
 
   @id:process-isolation.namespaces-environment.010 @rule:jail.proc.kernel-symbols-masked @verified @source:config.go#procMask @test:sandbox_test.go#TestProc_KernelSymbolsAreMasked

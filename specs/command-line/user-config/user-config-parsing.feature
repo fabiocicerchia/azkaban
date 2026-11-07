@@ -30,7 +30,7 @@ Feature: Reading the per-user configuration file
 
   @id:command-line.user-config.003 @rule:config.mask.named-path-unmasked @verified @source:cgroups.go#mentionedInConfig @test:main_test.go#TestMentionedInConfigCoversPersist
   Scenario Outline: A masked credential store that the config names with ro, rw or persist is left visible
-    Given the operator has a GitHub CLI login under ~/.config/gh
+    Given the operator's home is /home/alice and they have a GitHub CLI login under ~/.config/gh
     And the config contains "<line>"
     When the operator starts a jail
     Then ~/.config/gh is <visibility> inside the jail

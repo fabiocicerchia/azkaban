@@ -39,7 +39,7 @@ Feature: Jail hostname, name resolution and the shared terminal
 
     Examples:
       | tiocsti_setting                | is_terminal | mode           | warning_outcome                                                                                                                                                                            |
-      | 1                              | is          | normally       | stderr shows "azkaban: WARNING: this kernel allows TIOCSTI; ... Close it host-wide with: sysctl -w dev.tty.legacy_tiocsti=0" and the run record logs a degraded event "tiocsti-permissive" |
+      | 1                              | is          | normally       | stderr shows "azkaban: WARNING: this kernel allows TIOCSTI; the jail shares your terminal and can inject commands your shell runs after it exits. Close it host-wide with: sysctl -w dev.tty.legacy_tiocsti=0" and the run record logs a degraded event "tiocsti-permissive" |
       | absent (kernel older than 6.2) | is          | normally       | the same TIOCSTI warning is shown and recorded                                                                                                                                             |
       | 0                              | is          | normally       | no TIOCSTI warning is shown                                                                                                                                                                |
       | 1                              | is not      | normally       | no TIOCSTI warning is shown                                                                                                                                                                |

@@ -18,7 +18,7 @@ Feature: Capping a jail's memory
     When the operator runs a tool with --mem-max 8G
     Then the tool is not started
     And azkaban exits with status 1
-    And stderr reads "azkaban: --mem-max 8G cannot be enforced: <reason>"
+    And stderr begins with "azkaban: --mem-max 8G cannot be enforced: <reason>."
     And the message tells the operator to delegate a cgroup v2 memory controller or drop --mem-max
 
     Examples:

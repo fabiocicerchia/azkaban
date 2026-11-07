@@ -104,4 +104,4 @@ Feature: Asking the jail why a path, host or port is allowed
     Examples:
       | situation                               | message                                                                    |
       | the shell is not inside an azkaban jail | --self answers from inside a jail, and this is not one                     |
-      | the jail was started with --no-guidance | The jail was started with --no-guidance, so it carries no self-description |
+      | AZKABAN_JAIL is set but the jail's policy file cannot be read | The jail was started with --no-guidance, so it carries no self-description |

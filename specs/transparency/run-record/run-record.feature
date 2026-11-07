@@ -63,7 +63,7 @@ Feature: Recording what each jail run had access to
     When the operator starts a jail
     Then the record lists "ANTHROPIC_API_KEY" as forwarded
     And the record does not list "EXAMPLE_ABSENT_VAR"
-    And the value of ANTHROPIC_API_KEY appears nowhere in the record
+    And the record's forwarded list does not contain the value of ANTHROPIC_API_KEY
 
   @id:transparency.run-record.006 @rule:transparency.run-record.unrecordable-run-still-starts @inferred @source:audit.go#startAudit
   Scenario Outline: A run that cannot be recorded still starts, with a warning
@@ -74,7 +74,7 @@ Feature: Recording what each jail run had access to
     And the jailed command still runs
 
     Examples:
-      | condition                                | warning                                                                                                         |
-      | $XDG_STATE_HOME and $HOME are both unset | azkaban: warning: no state directory ($XDG_STATE_HOME and $HOME are both unset); this run is not being recorded |
-      | the state directory cannot be created    | azkaban: warning: cannot create <dir>; this run is not being recorded                                           |
-      | the record file cannot be opened         | azkaban: warning: cannot write the run record (<reason>); continuing                                            |
+      | condition                                     | warning                                                                                                  |
+      | the record stops being writable mid-run       | azkaban: warning: the run record is no longer being written (<reason>); what is in it already is still valid |
+      | the state directory cannot be created         | azkaban: warning: cannot create <dir>; this run is not being recorded                                    |
+      | the record file cannot be opened              | azkaban: warning: cannot write the run record (<reason>); continuing                                     |
