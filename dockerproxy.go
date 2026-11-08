@@ -351,7 +351,7 @@ func containerReason(body []byte, rootReal string) string {
 			return "named volumes and volume driver options are not allowed; use a project bind mount"
 		}
 		if strings.EqualFold(m.Type, "bind") && !pathWithin(m.Source, rootReal) {
-			return "bind mount of host path outside the project dir: " + m.Source
+			return outsideBindReason(m.Source)
 		}
 		// A `local`-driver volume with a `device` option is a host bind mount in
 		// disguise (`--mount type=volume,volume-opt=type=none,volume-opt=o=bind,
@@ -455,9 +455,20 @@ func bindReason(bind, rootReal string) string {
 		return "named volumes are not allowed inside the jail"
 	}
 	if !pathWithin(src, rootReal) {
-		return "bind mount of host path outside the project dir: " + src
+		return outsideBindReason(src)
 	}
 	return ""
+}
+
+// outsideBindReason - The refusal for a bind source outside the project dir.
+// A /tmp source gets a hint: the jail's /tmp is a private tmpfs, so the host
+// daemon would not even see the files the tool wrote there.
+func outsideBindReason(src string) string {
+	reason := "bind mount of host path outside the project dir: " + src
+	if pathWithin(src, "/tmp") {
+		reason += " (the jail's /tmp is private to it; set TMPDIR to a dir inside the project)"
+	}
+	return reason
 }
 
 // escapesNamespace - Reports namespace modes that leave the container's own

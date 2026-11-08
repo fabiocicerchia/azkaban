@@ -70,6 +70,11 @@ anonymous volumes. Images and build caches remain shared, and the bind-mount
 symlink race described in [the security design](design.md) remains: use a
 dedicated rootless daemon for hostile workloads or artefact isolation.
 
+A tool that stages files in a temp dir and bind-mounts it (`mkdtemp` under
+`/tmp`) is refused: the jail's `/tmp` is a private tmpfs, so the host daemon
+would mount a different, usually empty, directory. Point `TMPDIR` inside the
+project (`TMPDIR=$PWD/.tmp`) and the same mount is allowed.
+
 ## Why libpod is refused
 
 Podman's native `/libpod/…` API is deliberately refused rather than merely

@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -127,6 +128,17 @@ func TestFilterReasonContainer(t *testing.T) {
 		if (got != "") != c.wantBad {
 			t.Errorf("%s: reason=%q, wantBad=%v", c.name, got, c.wantBad)
 		}
+	}
+}
+
+// The jail's /tmp is a private tmpfs, so a /tmp bind source names files the
+// host daemon cannot see. The refusal stands; the hint says how to fix it.
+func TestOutsideBindReasonHintsAtTmp(t *testing.T) {
+	if r := outsideBindReason("/tmp/gandalf-x/site"); !strings.Contains(r, "TMPDIR") {
+		t.Errorf("/tmp source: no TMPDIR hint in %q", r)
+	}
+	if r := outsideBindReason("/etc"); strings.Contains(r, "TMPDIR") {
+		t.Errorf("/etc source: unexpected TMPDIR hint in %q", r)
 	}
 }
 
