@@ -1,5 +1,11 @@
 # 🏰 azkaban
 
+> [!WARNING]
+> **This project is retired** and no longer maintained. If you need something
+> for this, [fence](https://github.com/fencesandbox/fence) runs commands in a
+> lightweight, container-free sandbox with network and filesystem restrictions.
+> It is a separate project, actively developed, and worth a look.
+
 [![CI](https://github.com/fabiocicerchia/azkaban/actions/workflows/code-quality.yml/badge.svg)](https://github.com/fabiocicerchia/azkaban/actions/workflows/code-quality.yml)
 [![Security](https://github.com/fabiocicerchia/azkaban/actions/workflows/security.yml/badge.svg)](https://github.com/fabiocicerchia/azkaban/actions/workflows/security.yml)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
